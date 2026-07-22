@@ -6,7 +6,7 @@
 - 在 `_manifest.json` 中补充 `dependencies` 声明（aiohttp / beautifulsoup4 / curl_cffi / yt-dlp），便于 Host 在加载阶段校验缺失依赖；`requirements.txt` 同步补齐此前遗漏的 `aiohttp` 并与 manifest 版本对齐。
 
 ### 仓库整理
-- 移除开发期的测试脚本 `test_parsers.py` 与 Python 字节码缓存（`__pycache__/`、`*.pyc`），仓库现可直接提交与发布。
+- 移除开发期的测试脚本 `test_parsers.py` 与 Python 字节码缓存（`__pycache__/`、`*.pyc`）.
 
 ## [1.0.9] - 2026-07-22
 
