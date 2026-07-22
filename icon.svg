@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- 基础背景渐变 -->
+    <linearGradient id="bg" x1="0" y1="0" x2="512" y2="512">
+      <stop offset="0%" stop-color="#1E293B" />
+      <stop offset="100%" stop-color="#0F172A" />
+    </linearGradient>
+
+    <!-- 解析括号的品牌渐变色 (青蓝 -> 靛紫 -> 粉紫) -->
+    <linearGradient id="brand" x1="0" y1="0" x2="512" y2="512">
+      <stop offset="0%" stop-color="#38BDF8" /> 
+      <stop offset="50%" stop-color="#818CF8" /> 
+      <stop offset="100%" stop-color="#E879F9" /> 
+    </linearGradient>
+
+    <!-- 背景科技点阵纹理 -->
+    <pattern id="dots" x="0" y="0" width="32" height="32" patternUnits="userSpaceOnUse">
+      <circle cx="16" cy="16" r="2" fill="#FFFFFF" opacity="0.06" />
+    </pattern>
+  </defs>
+
+  <!-- 带有圆角的底板 (类似 App 图标的 Squircle) -->
+  <rect width="512" height="512" rx="112" fill="url(#bg)" />
+
+  <!-- 铺上点阵纹理 -->
+  <rect width="512" height="512" rx="112" fill="url(#dots)" />
+
+  <!-- 边缘淡淡的发光描边，增加立体质感 -->
+  <rect x="16" y="16" width="480" height="480" rx="96" fill="none" stroke="url(#brand)" stroke-width="4" opacity="0.3" />
+
+  <!-- 左侧解析符号 < -->
+  <path d="M 120 176 L 40 256 L 120 336" fill="none" stroke="url(#brand)" stroke-width="40" stroke-linecap="round" stroke-linejoin="round" />
+  
+  <!-- 右侧解析符号 > -->
+  <path d="M 392 176 L 472 256 L 392 336" fill="none" stroke="url(#brand)" stroke-width="40" stroke-linecap="round" stroke-linejoin="round" />
+
+  <!-- 中心的纯白链接 (Link) 图标 -->
+  <g transform="translate(256, 256) scale(0.7) translate(-256, -256)" fill="#FFFFFF">
+    <path d="M226.5 174.4h-58.3c-45.6 0-82.7 37.1-82.7 82.7 0 45.6 37.1 82.7 82.7 82.7h58.3v-40H168.2c-23.5 0-42.7-19.1-42.7-42.7s19.1-42.7 42.7-42.7h58.3v-40zm117.3 0h-58.3v40h58.3c23.5 0 42.7 19.1 42.7 42.7s-19.1 42.7-42.7 42.7h-58.3v40h58.3c45.6 0 82.7-37.1 82.7-82.7 0-45.6-37.1-82.7-82.7-82.7zm-147.2 62.7h118.8v40H196.6v-40z"/>
+  </g>
+</svg>
