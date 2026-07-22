@@ -1,0 +1,23 @@
+{
+  "manifest_version": 2,
+  "id": "com.maibot.link-parser",
+  "version": "1.1.0",
+  "name": "多平台链接解析器",
+  "description": "自动解析知乎、微博、YouTube、Twitter(X) 链接，并直接发送文本解析结果和视频回复",
+  "author": { "name": "jhmmm", "url": "https://github.com/jh-mmm" },
+  "license": "MIT",
+  "urls": { "repository": "https://github.com/jh-mmm/maibot-link-parser" },
+  "host_application": { "min_version": "1.0.0", "max_version": "1.99.99" },
+  "sdk": { "min_version": "2.0.0", "max_version": "2.99.99" },
+  "dependencies": [
+    { "type": "python_package", "name": "aiohttp", "version_spec": ">=3.8.0" },
+    { "type": "python_package", "name": "beautifulsoup4", "version_spec": ">=4.13.0,<5.0.0" },
+    { "type": "python_package", "name": "curl_cffi", "version_spec": ">=0.13.0,<0.15.0" },
+    { "type": "python_package", "name": "yt-dlp", "version_spec": ">=2025.12.8" }
+  ],
+  "capabilities": [
+    "send.text",
+    "send.image"
+  ],
+  "i18n": { "default_locale": "zh-CN" }
+}
