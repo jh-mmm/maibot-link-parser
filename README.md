@@ -1,6 +1,6 @@
 # MaiBot 多平台链接解析器 (maibot-link-parser)
 
-一个 MaiBot 插件。在聊天里发一个知乎、微博、YouTube 或 Twitter(X) 的链接，它会自动读取链接里的内容，把标题、作者、正文摘要、图片、视频和互动数据（点赞、评论等）整理成一条回复发出来，并跳过机器人原本要做的回答。
+一个 MaiBot 插件。在聊天里发一个知乎、微博、YouTube 或 Twitter(X) 的链接，它会自动读取链接里的内容，把标题、作者、正文摘要、图片、视频和互动数据（点赞、评论等）整理成一条回复发出来，并跳过麦麦原本要做的回答。
 
 ## 功能说明
 
@@ -90,6 +90,53 @@ merge_send = true             # 知乎与多图结果是否用合并转发。tru
 - **视频发不出来**：把 `max_video_size_mb` 和 `max_video_duration` 调大，比如改成 `100` 和 `600`。
 - **OneBot 地址端口**：必须和你实际运行的 OneBot（NapCat / go-cqhttp）的 HTTP 配置一致，否则消息发不出去。
 
+## API 与 Cookie 怎么获取
+
+下面分别说明这三个平台的凭据（API 密钥 / Cookie）怎么填。其中 **YouTube 和 Twitter(X) 默认留空也能用**——会自动走免费的公共接口；填 API 是为了拿到更完整的数据，或在公共接口不稳定时换成自己的源。**知乎则不同**：它没有 API，靠抓页面解析，对未登录请求限制很严，需要登录 Cookie 才能正常解析。
+
+### YouTube
+
+`[youtube]` 里有两项：
+
+- **`youtube_api_key`**：填的是 **Google 的 YouTube Data API v3 密钥**（不是某个视频或账号的 key）。
+  - **填了有什么用**：能拿到视频的播放量、点赞数、评论数、时长等互动数据。<del>但等视频发出来了，你不也就知道时长了吗？</del>
+  - **不填会怎样**：自动回退到 `noembed.com` 这个免费公共接口，只能拿到标题、作者和封面图，**没有播放量、点赞、时长**这些数据。
+  - **怎么申请**：
+    1. 打开 [Google Cloud Console](https://console.cloud.google.com/)，登录 Google 账号。
+    2. 新建一个项目（或用已有的）。
+    3. 在「API 和服务 → 库」里搜索并启用 **YouTube Data API v3**。
+    4. 进入「API 和服务 → 凭据」，点「创建凭据 → API 密钥」，把生成的密钥复制出来。
+    5. 粘贴到 `youtube_api_key = "..."` 里。
+  - 这个 API 有免费额度（每天一定的调用次数），个人使用足够。
+
+- **`cookies`**：YouTube 登录后的 Cookies，**只在用 yt-dlp 下载受限视频时才需要**，普通视频留空即可。获取方式和下面知乎的 Cookie 类似：浏览器登录 YouTube → `F12` 打开开发者工具 → 在请求头里找到 `Cookie` 这一行 → 整行复制填进来。
+
+### Twitter(X)
+
+`[twitter]` 里有两项。**注意：这里填的不是 Twitter/X 官方 API**（官方 API 收费且返回格式不兼容），而是 [fxtwitter](https://github.com/FixTweet/FxTwitter) 这个开源项目的兼容接口。
+
+- **两个都留空（默认）**：直接用 fxtwitter 的公共接口 `api.fxtwitter.com`，免费、开箱即用，能拿到正文、作者、图片、视频、点赞 / 转发 / 评论数。绝大多数人这样就够了。
+- **`twitter_api_base_url` + `twitter_api_key`**：当你**自建或反代**了一个 fxtwitter 实例时才填。
+  - **为什么填**：公共 fxtwitter 偶尔会被限流，自建一个更稳定，也能在前面加一层鉴权。
+  - **`twitter_api_base_url`**：填你自己的 fxtwitter 实例根地址，比如 `https://fxtwitter.example.com`。插件会自动拼成 `https://fxtwitter.example.com/{用户名}/status/{推文ID}` 去请求。
+  - **`twitter_api_key`**：填你给这个反代 / 实例设置的 Bearer Token（鉴权用）。插件请求时会带上 `Authorization: Bearer 你的key`。
+  - **两项必须同时填**，只填其中一个不会生效，会退回用公共接口。
+  - **格式要求**：你的实例返回的 JSON 必须和 fxtwitter 一致（含 `tweet` 字段，里面有 `author`、`text`、`media`、`likes` 等）。
+
+### 知乎
+
+`[zhihu]` Cookie 如何获取：
+
+- **`cookies`**：知乎的登录 Cookie。知乎对未登录请求限制很严，遇到 403、风控或解析不出内容时就需要填。
+  - **怎么获取**：
+    1. 在浏览器里登录知乎。
+    2. 打开浏览器开发者工具（一般按 `F12`），切到「网络 / Network」标签。
+    3. 刷新一个知乎页面，在请求列表里点任意一个请求，找到请求头里的 `Cookie` 这一行，整行复制它的值。
+    4. 粘贴到 `config.toml` 的 `[zhihu]` → `cookies = "..."` 里。
+  - 留空也能跑，但可能因为风控拿不到内容；Cookie 失效后需要重新获取。
+
+改完 `config.toml` 记得重启 MaiBot 让配置生效。
+
 ## 怎么用
 
 不需要输入任何命令。在对话里发一条包含所支持平台链接的消息，插件会自动识别并解析。
@@ -100,7 +147,7 @@ merge_send = true             # 知乎与多图结果是否用合并转发。tru
 https://www.zhihu.com/question/xxxxxx
 ```
 
-机器人就会回复解析出的标题、作者、摘要、图片等。
+插件就会回复解析出的标题、作者、摘要、图片等。
 
 ## 权限与能力说明
 
@@ -117,13 +164,7 @@ https://www.zhihu.com/question/xxxxxx
 
 ### 知乎链接没反应，或后台提示 403 / 风控
 
-知乎对未登录请求限制较严。需要填入你的知乎 Cookie：
-
-1. 在浏览器登录知乎。
-2. 打开浏览器开发者工具（一般按 `F12`），切到“网络 / Network”标签。
-3. 刷新一个知乎页面，在请求列表里点任意一个请求，找到请求头里的 `Cookie` 这一行，整行复制它的值。
-4. 粘贴到 `config.toml` 的 `[zhihu]` → `cookies = "..."` 里。
-5. 重启 MaiBot。
+知乎对未登录请求限制较严，需要填入登录 Cookie 才能正常解析。获取步骤见上文「[知乎的 Cookie 怎么填](#知乎)」一节，填完重启 MaiBot。
 
 ### 视频发不出来或看不到
 
@@ -135,13 +176,20 @@ https://www.zhihu.com/question/xxxxxx
 
 ### YouTube / Twitter 解析没生效
 
-依次检查：
+依次检查（各项具体填什么、怎么申请，见上文「[YouTube 与 Twitter(X) 和知乎的 API 与 Cookie 怎么填](#youtube-与-twitterx-和知乎的-api-与-cookie-怎么填)」一节）：
 
 1. `config.toml` 的 `[platforms]` 里，对应平台是否设成了 `true`。
 2. YouTube 受限视频：在 `[youtube]` 填入登录 Cookies。
-3. Twitter：可能需要配置 `twitter_api_key` 或反代地址 `twitter_api_base_url`。
+3. Twitter：两个都留空时默认走公共 fxtwitter 接口；若公共接口被限流，再配置自建的 `twitter_api_base_url` 和 `twitter_api_key`。
 
 改完配置后记得重启 MaiBot 让配置生效。
+
+### 遇到了其他问题？
+
+联系我的邮箱 `yuan00712@outlook.com`，或者在 GitHub 上提交 issues，希望能帮到您。
+
+顺颂时祺。
+
 
 ## 致谢与许可
 
