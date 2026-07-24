@@ -48,8 +48,8 @@ pip install -r requirements.txt
 ```toml
 [plugin]
 name = "maibot-link-parser"     # 插件名，不要改
-config_version = "1.1.0"        # 配置版本，不要改
-version = "1.1.0"               # 插件版本，不要改
+config_version = "1.2.0"        # 配置版本，不要改
+version = "1.2.0"               # 插件版本，不要改
 enabled = true                  # 是否启用插件。true 启用，false 停用
 
 [general]
@@ -71,6 +71,7 @@ cookies = ""                  # YouTube 登录 Cookies，下载受限视频时�
 [zhihu]
 # 知乎常要求登录。遇到 403 或风控时，把登录后的 Cookie 填到这里
 cookies = ""
+proxy = ""                     # HTTP/HTTPS 代理（如 http://127.0.0.1:7890），留空不使用
 
 [twitter]
 twitter_api_key = ""          # Twitter API Key（可选）
@@ -134,6 +135,7 @@ merge_send = true             # 知乎与多图结果是否用合并转发。tru
     3. 刷新一个知乎页面，在请求列表里点任意一个请求，找到请求头里的 `Cookie` 这一行，整行复制它的值。
     4. 粘贴到 `config.toml` 的 `[zhihu]` → `cookies = "..."` 里。
   - 留空也能跑，但可能因为风控拿不到内容；Cookie 失效后需要重新获取。
+- **`proxy`**：可选的 HTTP/HTTPS 代理地址（如 `http://127.0.0.1:7890`）。服务器 IP 被知乎风控、或需要走代理访问时填写，留空则直连。
 
 改完 `config.toml` 记得重启 MaiBot 让配置生效。
 

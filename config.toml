@@ -1,7 +1,7 @@
 [plugin]
 name = "maibot-link-parser"
-config_version = "1.1.0"
-version = "1.1.0"
+config_version = "1.2.0"
+version = "1.2.0"
 enabled = true
 
 
@@ -27,6 +27,8 @@ cookies = ""
 [zhihu]
 # 请在此处填入知乎的 Cookies.
 cookies = ""
+# HTTP/HTTPS 代理地址（如 http://127.0.0.1:7890），留空则不使用代理
+proxy = ""
 
 
 [twitter]

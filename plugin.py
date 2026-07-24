@@ -36,8 +36,8 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     name: str = Field(default="maibot-link-parser", description="插件名称")
-    config_version: str = Field(default="1.1.0", description="配置文件版本")
-    version: str = Field(default="1.1.0", description="插件版本")
+    config_version: str = Field(default="1.2.0", description="配置文件版本")
+    version: str = Field(default="1.2.0", description="插件版本")
     enabled: bool = Field(default=True, description="是否启用插件")
 
 
@@ -83,6 +83,10 @@ class ZhihuSectionConfig(PluginConfigBase):
     cookies: str = Field(
         default="",
         description="知乎登录 Cookies（遇到风控或登录页时需要填写）",
+    )
+    proxy: str = Field(
+        default="",
+        description="HTTP/HTTPS 代理地址（如 http://127.0.0.1:7890，留空不使用）",
     )
 
 
@@ -187,6 +191,7 @@ class LinkParserPlugin(MaiBotPlugin):
                     cookies=self.config.zhihu.cookies,
                     timeout=common_timeout,
                     max_content_length=max_content_length,
+                    proxy=self.config.zhihu.proxy,
                 )
             )
         if self.config.platforms.weibo:
@@ -280,6 +285,10 @@ class LinkParserPlugin(MaiBotPlugin):
                     parser.platform_name,
                     match.group(0)[:80],
                 )
+                # 识别到链接即先告知用户，避免解析期间无任何反馈
+                await self._send_status(
+                    message, f"🔗 识别到{parser.platform_name}链接，开始解析..."
+                )
                 try:
                     result = await parser.parse(raw_text, match)
                     self.ctx.logger.info(
@@ -295,9 +304,41 @@ class LinkParserPlugin(MaiBotPlugin):
                         e,
                         traceback.format_exc(),
                     )
+                    # 解析失败时把原因反馈给用户（而非静默吞掉）
+                    await self._send_status(
+                        message,
+                        f"❌ {parser.platform_name}解析失败：{self._friendly_error(e)}",
+                    )
                 # 只处理第一条匹配的链接
                 break
         return False
+
+    # ── 状态提示与错误归因 ──────────────────────────────────────────────
+
+    async def _send_status(self, message: dict, text: str) -> None:
+        """发送一条简短状态提示（开始解析 / 解析失败原因等）。
+
+        仅用于反馈进度与失败原因，不影响主流程；发送失败只记日志，不抛异常。
+        """
+        try:
+            ok = await send_text(message, text, self._api)
+            if not ok:
+                self.ctx.logger.warning("link_parser | 状态提示发送失败: OneBot 接口返回失败")
+        except Exception as e:
+            self.ctx.logger.warning("link_parser | 状态提示发送失败: %s", e)
+
+    @staticmethod
+    def _friendly_error(exc: Exception) -> str:
+        """把解析异常转成面向用户的简短原因说明。
+
+        优先使用解析器主动抛出的文案（如知乎的风控/登录页提示）；
+        对于未知异常给出兜底说明，避免把堆栈直接丢给用户。
+        """
+        message = str(exc).strip()
+        if message:
+            # 限制长度，防止个别异常携带超长信息刷屏
+            return message if len(message) <= 200 else message[:200] + "…"
+        return f"{type(exc).__name__}（未知错误）"
 
     # ── 消息文本提取 ────────────────────────────────────────────────────
 

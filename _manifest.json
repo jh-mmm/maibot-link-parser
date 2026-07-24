@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "version": "1.1.0",
+  "version": "1.2.0",
   "name": "多平台链接解析器",
   "description": "自动解析知乎、微博、YouTube、Twitter(X) 链接，并直接发送文本解析结果和视频回复",
   "author": {
