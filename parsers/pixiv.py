@@ -248,10 +248,20 @@ class PixivParser(BaseParser):
 
         # R18 模糊打码处理
         if should_blur and cover_image:
-            blurred_path = await self._download_and_blur(cover_image, f"pixiv_{pid}_cover_blur.jpg")
+            # 优先使用 regular 或 small 版本进行打码（体积适中，避免因下载数兆原图导致超时）
+            blur_source = urls_map.get("regular") or urls_map.get("small") or cover_image
+            blur_source = self._apply_img_proxy(blur_source)
+            blurred_path = await self._download_and_blur(blur_source, f"pixiv_{pid}_cover_blur.jpg")
             if blurred_path:
                 cover_image = str(blurred_path)
                 images = [str(blurred_path)]
+            else:
+                # 模糊打码失败时，严禁回退发送原图，清空图片列表并补充提示
+                cover_image = ""
+                images = []
+                content_parts.append("⚠️ R-18 封面打码处理超时/失败，为保护群聊安全已取消发送原图")
+                content = "\n\n".join(content_parts)
+                content = truncate_text(content, self._max_content_length)
 
         stats = {
             "favorites": int(body.get("bookmarkCount", 0)),
@@ -339,10 +349,19 @@ class PixivParser(BaseParser):
 
         # R18 模糊打码
         if should_blur and cover_image:
-            blurred_path = await self._download_and_blur(cover_image, f"pixiv_{pid}_manga_blur.jpg")
+            blur_source = urls_map.get("regular") or urls_map.get("small") or cover_image
+            blur_source = self._apply_img_proxy(blur_source)
+            blurred_path = await self._download_and_blur(blur_source, f"pixiv_{pid}_manga_blur.jpg")
             if blurred_path:
                 cover_image = str(blurred_path)
                 images = [str(blurred_path)]
+            else:
+                # 模糊打码失败时，严禁回退发送原图，清空图片列表
+                cover_image = ""
+                images = []
+                content_parts.append("⚠️ R-18 封面打码处理超时/失败，为保护群聊安全已取消发送原图")
+                content = "\n\n".join(content_parts)
+                content = truncate_text(content, self._max_content_length)
 
         stats = {
             "favorites": int(body.get("bookmarkCount", 0)),
@@ -404,9 +423,6 @@ class PixivParser(BaseParser):
             logger.warning("Pixiv PID %s 动图元数据获取或合成失败: %s，回退为静态封面", pid, exc)
             content_parts.append("⚠️ 动图帧下载失败，已降级为静态图片展示")
 
-        content = "\n\n".join(content_parts)
-        content = truncate_text(content, self._max_content_length)
-
         images: list[str] = []
         cover_image: str = ""
 
@@ -416,15 +432,22 @@ class PixivParser(BaseParser):
         else:
             # 回退为普通静态封面
             urls_map = body.get("urls", {})
-            img_url = urls_map.get("regular") or urls_map.get("original") or ""
+            img_url = urls_map.get("regular") or urls_map.get("small") or urls_map.get("original") or ""
             if img_url:
                 img_url = self._apply_img_proxy(img_url)
                 if should_blur:
                     blurred = await self._download_and_blur(img_url, f"pixiv_{pid}_ugoira_blur.jpg")
-                    cover_image = str(blurred) if blurred else img_url
+                    if blurred:
+                        cover_image = str(blurred)
+                        images.append(cover_image)
+                    else:
+                        content_parts.append("⚠️ R-18 封面打码处理超时/失败，为保护群聊安全已取消发送原图")
                 else:
                     cover_image = img_url
-                images.append(cover_image)
+                    images.append(cover_image)
+
+        content = "\n\n".join(content_parts)
+        content = truncate_text(content, self._max_content_length)
 
         stats = {
             "favorites": int(body.get("bookmarkCount", 0)),
@@ -496,9 +519,6 @@ class PixivParser(BaseParser):
         if novel_clean:
             content_parts.append(f"\n📖 【正文摘录】\n{novel_clean}")
 
-        content = "\n\n".join(content_parts)
-        content = truncate_text(content, self._max_content_length)
-
         # 封面图
         cover_url = body.get("coverUrl", "") or ""
         cover_image: str = ""
@@ -507,10 +527,17 @@ class PixivParser(BaseParser):
             cover_url = self._apply_img_proxy(cover_url)
             if should_blur:
                 blurred = await self._download_and_blur(cover_url, f"pixiv_novel_{nid}_blur.jpg")
-                cover_image = str(blurred) if blurred else cover_url
+                if blurred:
+                    cover_image = str(blurred)
+                    images.append(cover_image)
+                else:
+                    content_parts.append("⚠️ R-18 封面打码处理超时/失败，为保护群聊安全已取消发送原图")
             else:
                 cover_image = cover_url
-            images.append(cover_image)
+                images.append(cover_image)
+
+        content = "\n\n".join(content_parts)
+        content = truncate_text(content, self._max_content_length)
 
         stats = {
             "favorites": int(body.get("bookmarkCount", 0)),
@@ -565,7 +592,7 @@ class PixivParser(BaseParser):
                 headers=headers,
                 impersonate="chrome",
                 proxies=proxies,
-                timeout=self._timeout * 2,
+                timeout=max(self._timeout * 3, 45),
             )
             if resp.status_code != 200:
                 raise RuntimeError(f"下载 Ugoira zip 失败 (HTTP {resp.status_code})")
@@ -575,46 +602,42 @@ class PixivParser(BaseParser):
         await asyncio.to_thread(download_zip)
 
         try:
-            # 在后台线程中合成 GIF
-            await asyncio.to_thread(self._build_gif_sync, zip_path, frames, gif_path, blur)
+            def process_frames() -> None:
+                images: list[Image.Image] = []
+                durations: list[int] = []
+
+                with zipfile.ZipFile(zip_path, "r") as zf:
+                    for frame_info in frames:
+                        frame_file = frame_info.get("file", "")
+                        delay = int(frame_info.get("delay", 50))
+                        if not frame_file or frame_file not in zf.namelist():
+                            continue
+
+                        with zf.open(frame_file) as ff:
+                            img = Image.open(io.BytesIO(ff.read()))
+                            img.load()
+                            if blur:
+                                img = img.filter(ImageFilter.GaussianBlur(radius=15))
+                            images.append(img.convert("RGB"))
+                            durations.append(delay)
+
+                if not images:
+                    raise ValueError("解压 Ugoira 帧图片失败")
+
+                # 将第一帧作为基底保存为带有循环播放的 GIF
+                images[0].save(
+                    gif_path,
+                    "GIF",
+                    save_all=True,
+                    append_images=images[1:],
+                    duration=durations,
+                    loop=0,
+                )
+
+            await asyncio.to_thread(process_frames)
             return gif_path
         finally:
             zip_path.unlink(missing_ok=True)
-
-    @staticmethod
-    def _build_gif_sync(
-        zip_path: Path, frames: list[dict[str, Any]], gif_path: Path, blur: bool = False
-    ) -> None:
-        """同步方法：从 zip 中解压各帧图片合成为 GIF 动图。"""
-        images: list[Image.Image] = []
-        durations: list[int] = []
-
-        with zipfile.ZipFile(zip_path) as zf:
-            for frame in frames:
-                file_name = frame.get("file", "")
-                delay = int(frame.get("delay", 60))
-                if not file_name:
-                    continue
-                with zf.open(file_name) as f:
-                    img = Image.open(f)
-                    img.load()
-                    if blur:
-                        img = img.filter(ImageFilter.GaussianBlur(radius=15))
-                    images.append(img.convert("RGB"))
-                    durations.append(delay)
-
-        if not images:
-            raise ValueError("解压 Ugoira 帧图片失败")
-
-        # 将第一帧作为基底保存为带有循环播放的 GIF
-        images[0].save(
-            gif_path,
-            "GIF",
-            save_all=True,
-            append_images=images[1:],
-            duration=durations,
-            loop=0,
-        )
 
     # ------------------------------------------------------------------
     # 辅助方法：图片下载与高斯模糊
