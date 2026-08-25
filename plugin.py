@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import traceback
 from pathlib import Path
+from typing import ClassVar, Literal
 
 from maibot_sdk import Field, HookHandler, MaiBotPlugin, PluginConfigBase
 from maibot_sdk.types import HookMode, HookOrder
@@ -14,6 +15,8 @@ from .parsers.base import BaseParser, ParseResult
 from .sender import (
     ApiSettings,
     MessageSegment,
+    get_group_id,
+    get_user_id,
     image_segment,
     send_forward,
     send_image,
@@ -31,88 +34,253 @@ logger = logging.getLogger("plugin.com.maibot.link-parser")
 
 
 class PluginSectionConfig(PluginConfigBase):
-    __ui_label__ = "插件"
-    __ui_icon__ = "extension"
-    __ui_order__ = 0
+    __ui_label__: ClassVar[str] = "插件"
+    __ui_icon__: ClassVar[str] = "package"
+    __ui_order__: ClassVar[int] = 0
 
-    name: str = Field(default="maibot-link-parser", description="插件名称")
-    config_version: str = Field(default="1.2.0", description="配置文件版本")
-    version: str = Field(default="1.2.0", description="插件版本")
-    enabled: bool = Field(default=True, description="是否启用插件")
+    name: str = Field(
+        default="maibot-link-parser",
+        description="插件唯一标识名",
+        json_schema_extra={"label": "插件标识", "disabled": True, "hidden": True},
+    )
+    config_version: str = Field(
+        default="1.4.0",
+        description="配置文件版本号",
+        json_schema_extra={"label": "配置版本", "disabled": True, "hidden": True},
+    )
+    version: str = Field(
+        default="1.4.0",
+        description="插件发布版本号",
+        json_schema_extra={"label": "插件版本", "disabled": True, "hidden": True},
+    )
+    enabled: bool = Field(
+        default=True,
+        description="是否启用多平台链接解析插件",
+        json_schema_extra={"label": "启用插件"},
+    )
 
 
 class GeneralSectionConfig(PluginConfigBase):
-    __ui_label__ = "通用设置"
-    __ui_icon__ = "settings"
-    __ui_order__ = 1
+    __ui_label__: ClassVar[str] = "通用设置"
+    __ui_icon__: ClassVar[str] = "settings"
+    __ui_order__: ClassVar[int] = 1
 
-    timeout: int = Field(default=15, description="HTTP 请求超时（秒）")
-    max_content_length: int = Field(default=500, description="内容摘要最大字符数")
-    max_video_size_mb: int = Field(default=50, description="视频下载最大体积（MB）")
-    max_video_duration: int = Field(default=300, description="视频最大时长（秒）")
+    timeout: int = Field(
+        default=15,
+        description="全局网络请求超时时间（单位：秒）",
+        json_schema_extra={"label": "请求超时时间 (秒)"},
+    )
+    max_content_length: int = Field(
+        default=500,
+        description="正文摘要最大字符数（超过限制自动在句末截断并显示省略号）",
+        json_schema_extra={"label": "正文摘要最大字数"},
+    )
+    max_video_size_mb: int = Field(
+        default=50,
+        description="允许下载并发送的最大视频体积（单位：MB，超过限制则不发送视频文件）",
+        json_schema_extra={"label": "视频最大体积 (MB)"},
+    )
+    max_video_duration: int = Field(
+        default=300,
+        description="允许下载并发送的最大视频时长（单位：秒，300 即 5 分钟，超过限制则跳过）",
+        json_schema_extra={"label": "视频最大时长 (秒)"},
+    )
 
 
 class PlatformSectionConfig(PluginConfigBase):
-    __ui_label__ = "平台开关"
-    __ui_icon__ = "link"
-    __ui_order__ = 2
+    __ui_label__: ClassVar[str] = "平台开关"
+    __ui_icon__: ClassVar[str] = "link"
+    __ui_order__: ClassVar[int] = 2
 
-    zhihu: bool = Field(default=True, description="启用知乎解析")
-    weibo: bool = Field(default=True, description="启用微博解析")
-    youtube: bool = Field(default=True, description="启用 YouTube 解析")
-    twitter: bool = Field(default=True, description="启用 Twitter/X 解析")
-
-
-class YouTubeSectionConfig(PluginConfigBase):
-    __ui_label__ = "YouTube"
-    __ui_icon__ = "smart_display"
-    __ui_order__ = 3
-
-    youtube_api_key: str = Field(default="", description="YouTube Data API v3 Key（可选）")
-    cookies: str = Field(
-        default="",
-        description="YouTube 登录 Cookies（下载受限视频时可选）",
+    zhihu: bool = Field(
+        default=True,
+        description="是否启用知乎链接解析",
+        json_schema_extra={"label": "启用知乎解析"},
+    )
+    weibo: bool = Field(
+        default=True,
+        description="是否启用微博链接解析",
+        json_schema_extra={"label": "启用微博解析"},
+    )
+    youtube: bool = Field(
+        default=False,
+        description="是否启用 YouTube 视频解析",
+        json_schema_extra={"label": "启用 YouTube 解析"},
+    )
+    twitter: bool = Field(
+        default=False,
+        description="是否启用 Twitter/X 推文解析",
+        json_schema_extra={"label": "启用 Twitter(X) 解析"},
+    )
+    pixiv: bool = Field(
+        default=True,
+        description="是否启用 Pixiv 插画/漫画/动图/小说解析",
+        json_schema_extra={"label": "启用 Pixiv 解析"},
     )
 
 
-class ZhihuSectionConfig(PluginConfigBase):
-    __ui_label__ = "知乎"
-    __ui_icon__ = "lightbulb"
-    __ui_order__ = 4
+class AccessControlConfig(PluginConfigBase):
+    """访问控制基础配置（各平台独立继承）。
+
+    群维度与用户维度各自独立判定，两者都通过才会解析（AND 关系）。
+    被拦截的消息不会阻止 AI 回复，插件对该消息完全隐形。
+    """
+
+    group_mode: Literal["off", "whitelist", "blacklist"] = Field(
+        default="off",
+        description="群名单模式：off=不限制 | whitelist=仅名单内群 | blacklist=名单内群不解析",
+        json_schema_extra={"label": "群名单模式", "x-widget": "select"},
+    )
+    group_whitelist: list[str] = Field(
+        default_factory=list,
+        description="群白名单（群号列表），group_mode=whitelist 时生效；留空表示所有群都不解析",
+        json_schema_extra={"label": "群号白名单"},
+    )
+    group_blacklist: list[str] = Field(
+        default_factory=list,
+        description="群黑名单（群号列表），group_mode=blacklist 时生效",
+        json_schema_extra={"label": "群号黑名单"},
+    )
+    user_mode: Literal["off", "whitelist", "blacklist"] = Field(
+        default="off",
+        description="用户名单模式：off=不限制 | whitelist=仅名单内用户 | blacklist=名单内用户不解析",
+        json_schema_extra={"label": "用户名单模式", "x-widget": "select"},
+    )
+    user_whitelist: list[str] = Field(
+        default_factory=list,
+        description="用户白名单（QQ 号列表），user_mode=whitelist 时生效；留空表示所有人都不解析",
+        json_schema_extra={"label": "用户 QQ 白名单"},
+    )
+    user_blacklist: list[str] = Field(
+        default_factory=list,
+        description="用户黑名单（QQ 号列表），user_mode=blacklist 时生效",
+        json_schema_extra={"label": "用户 QQ 黑名单"},
+    )
+
+
+class ZhihuSectionConfig(AccessControlConfig):
+    __ui_label__: ClassVar[str] = "知乎"
+    __ui_icon__: ClassVar[str] = "lightbulb"
+    __ui_order__: ClassVar[int] = 3
 
     cookies: str = Field(
         default="",
-        description="知乎登录 Cookies（遇到风控或登录页时需要填写）",
+        description="知乎登录 Cookies（遇到反爬验证或风控时需要填写，包含 z_c0 等）",
+        json_schema_extra={"label": "知乎 Cookies", "input_type": "textarea"},
     )
     proxy: str = Field(
         default="",
-        description="HTTP/HTTPS 代理地址（如 http://127.0.0.1:7890，留空不使用）",
+        description="HTTP/HTTPS 代理地址（例如 http://127.0.0.1:7890，留空则直连）",
+        json_schema_extra={"label": "知乎代理地址"},
     )
 
 
-class TwitterSectionConfig(PluginConfigBase):
-    __ui_label__ = "Twitter/X"
-    __ui_icon__ = "alternate_email"
-    __ui_order__ = 5
+class WeiboSectionConfig(AccessControlConfig):
+    __ui_label__: ClassVar[str] = "微博"
+    __ui_icon__: ClassVar[str] = "chat"
+    __ui_order__: ClassVar[int] = 4
 
-    twitter_api_key: str = Field(default="", description="Twitter API Key（可选）")
+
+class YouTubeSectionConfig(AccessControlConfig):
+    __ui_label__: ClassVar[str] = "YouTube"
+    __ui_icon__: ClassVar[str] = "smart_display"
+    __ui_order__: ClassVar[int] = 5
+
+    youtube_api_key: str = Field(
+        default="",
+        description="Google YouTube Data API v3 密钥（用于获取播放量/点赞数/时长等数据，可选）",
+        json_schema_extra={"label": "YouTube API Key", "input_type": "password"},
+    )
+    cookies: str = Field(
+        default="",
+        description="YouTube 登录 Cookies（用于 yt-dlp 下载年龄受限或受限视频时填写，可选）",
+        json_schema_extra={"label": "YouTube Cookies", "input_type": "textarea"},
+    )
+
+
+class TwitterSectionConfig(AccessControlConfig):
+    __ui_label__: ClassVar[str] = "Twitter/X"
+    __ui_icon__: ClassVar[str] = "alternate_email"
+    __ui_order__: ClassVar[int] = 6
+
+    twitter_api_key: str = Field(
+        default="",
+        description="Twitter/X 自定义 API 密钥（使用自建/反代 fxtwitter 实例时填写，可选）",
+        json_schema_extra={"label": "Twitter API Key", "input_type": "password"},
+    )
     twitter_api_base_url: str = Field(
-        default="", description="Twitter 自定义 API 基础 URL（可选）"
+        default="",
+        description="Twitter/X 自定义 API 根地址（例如 https://fxtwitter.example.com，留空使用公共接口）",
+        json_schema_extra={"label": "Twitter API 地址"},
+    )
+
+
+class PixivSectionConfig(AccessControlConfig):
+    __ui_label__: ClassVar[str] = "Pixiv"
+    __ui_icon__: ClassVar[str] = "palette"
+    __ui_order__: ClassVar[int] = 7
+
+    cookies: str = Field(
+        default="",
+        description="Pixiv 登录 Cookies（用于访问 R18 或登录限定内容，支持填写整行 Cookie 或仅填 PHPSESSID）",
+        json_schema_extra={"label": "Pixiv Cookies", "input_type": "textarea"},
+    )
+    proxy: str = Field(
+        default="",
+        description="HTTP/HTTPS 代理地址（国内服务器推荐配置，例如 http://127.0.0.1:7890）",
+        json_schema_extra={"label": "Pixiv 代理地址"},
+    )
+    img_proxy: str = Field(
+        default="",
+        description="图片反代域名（如 i.pixiv.re，免代理直连图片服务器，留空则直连原图站）",
+        json_schema_extra={"label": "图片反代域名"},
+    )
+    nsfw: Literal["send", "blur", "ignore"] = Field(
+        default="blur",
+        description="R18 内容策略：blur=高斯模糊打码封面 | ignore=忽略并拦截 | send=正常发送",
+        json_schema_extra={"label": "R18 内容策略", "x-widget": "select"},
+    )
+    image_quality: Literal["regular", "original"] = Field(
+        default="regular",
+        description="图片清晰度：regular=标准清晰度大图 | original=原图",
+        json_schema_extra={"label": "图片清晰度", "x-widget": "select"},
+    )
+    max_manga_pages: int = Field(
+        default=20,
+        description="漫画最大下载解析页数（超过该限制仅发送封面并提示，0 为不限制）",
+        json_schema_extra={"label": "漫画最大下载页数"},
     )
 
 
 class OneBotSectionConfig(PluginConfigBase):
-    __ui_label__ = "OneBot"
-    __ui_icon__ = "cable"
-    __ui_order__ = 6
+    __ui_label__: ClassVar[str] = "OneBot"
+    __ui_icon__: ClassVar[str] = "cable"
+    __ui_order__: ClassVar[int] = 8
 
-    host: str = Field(default="127.0.0.1", description="OneBot 实现（如 NapCat/go-cqhttp）HTTP 地址")
-    port: int = Field(default=3000, description="OneBot HTTP 端口")
-    token: str = Field(default="", description="OneBot access_token（可选）")
-    bot_uin: str = Field(default="", description="机器人 QQ 号（合并转发节点使用，可选）")
+    host: str = Field(
+        default="127.0.0.1",
+        description="OneBot 实现（如 NapCat/go-cqhttp/LLOneBot）HTTP 监听地址",
+        json_schema_extra={"label": "OneBot HTTP 地址"},
+    )
+    port: int = Field(
+        default=3000,
+        description="OneBot HTTP 服务端口",
+        json_schema_extra={"label": "OneBot HTTP 端口"},
+    )
+    token: str = Field(
+        default="",
+        description="OneBot access_token（未开启 Token 请保持为空）",
+        json_schema_extra={"label": "OneBot Access Token", "input_type": "password"},
+    )
+    bot_uin: str = Field(
+        default="",
+        description="机器人 QQ 号（用于合并转发节点展示，普通消息发送无需填写）",
+        json_schema_extra={"label": "机器人 QQ 号"},
+    )
     merge_send: bool = Field(
         default=True,
-        description="对知乎解析与多图结果使用合并转发发送（失败时自动降级为逐条发送）",
+        description="是否对知乎解析与多图画集使用合并转发发送（失败时自动降级为逐条发送）",
+        json_schema_extra={"label": "合并转发发送"},
     )
 
 
@@ -120,10 +288,14 @@ class ParserConfig(PluginConfigBase):
     plugin: PluginSectionConfig = Field(default_factory=PluginSectionConfig)
     general: GeneralSectionConfig = Field(default_factory=GeneralSectionConfig)
     platforms: PlatformSectionConfig = Field(default_factory=PlatformSectionConfig)
-    youtube: YouTubeSectionConfig = Field(default_factory=YouTubeSectionConfig)
     zhihu: ZhihuSectionConfig = Field(default_factory=ZhihuSectionConfig)
+    weibo: WeiboSectionConfig = Field(default_factory=WeiboSectionConfig)
+    youtube: YouTubeSectionConfig = Field(default_factory=YouTubeSectionConfig)
     twitter: TwitterSectionConfig = Field(default_factory=TwitterSectionConfig)
+    pixiv: PixivSectionConfig = Field(default_factory=PixivSectionConfig)
     onebot: OneBotSectionConfig = Field(default_factory=OneBotSectionConfig)
+
+
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -181,6 +353,7 @@ class LinkParserPlugin(MaiBotPlugin):
         from .parsers.weibo import WeiboParser
         from .parsers.youtube import YouTubeParser
         from .parsers.twitter import TwitterParser
+        from .parsers.pixiv import PixivParser
 
         common_timeout = self.config.general.timeout
         max_content_length = self.config.general.max_content_length
@@ -211,6 +384,20 @@ class LinkParserPlugin(MaiBotPlugin):
                 TwitterParser(
                     api_key=self.config.twitter.twitter_api_key,
                     api_base_url=self.config.twitter.twitter_api_base_url,
+                    timeout=common_timeout,
+                    max_content_length=max_content_length,
+                )
+            )
+        if self.config.platforms.pixiv:
+            self._parsers.append(
+                PixivParser(
+                    cookies=self.config.pixiv.cookies,
+                    proxy=self.config.pixiv.proxy,
+                    img_proxy=self.config.pixiv.img_proxy,
+                    nsfw=self.config.pixiv.nsfw,
+                    image_quality=self.config.pixiv.image_quality,
+                    max_manga_pages=self.config.pixiv.max_manga_pages,
+                    runtime_dir=runtime_dir,
                     timeout=common_timeout,
                     max_content_length=max_content_length,
                 )
@@ -280,6 +467,17 @@ class LinkParserPlugin(MaiBotPlugin):
         for parser in self._parsers:
             match = parser.match_url(raw_text)
             if match:
+                # 针对匹配到的平台执行独立的访问控制检查
+                platform_access = self._get_platform_access_config(parser.platform_name)
+                if isinstance(message, dict) and not self._is_access_allowed(
+                    message, platform_access
+                ):
+                    self.ctx.logger.info(
+                        "link_parser | 匹配到 %s 链接，但未通过该平台的访问控制规则，跳过解析",
+                        parser.platform_name,
+                    )
+                    return False
+
                 self.ctx.logger.info(
                     "link_parser | 匹配 %s | url=%s",
                     parser.platform_name,
@@ -312,6 +510,78 @@ class LinkParserPlugin(MaiBotPlugin):
                 # 只处理第一条匹配的链接
                 break
         return False
+
+    # ── 访问控制 ────────────────────────────────────────────────────────
+
+    def _get_platform_access_config(
+        self, platform_name: str
+    ) -> AccessControlConfig | None:
+        """根据平台显示名称获取对应的独立访问控制配置。"""
+        mapping: dict[str, AccessControlConfig | None] = {
+            "知乎": getattr(self.config, "zhihu", None),
+            "微博": getattr(self.config, "weibo", None),
+            "YouTube": getattr(self.config, "youtube", None),
+            "Twitter": getattr(self.config, "twitter", None),
+            "Pixiv": getattr(self.config, "pixiv", None),
+        }
+        return mapping.get(platform_name)
+
+    @staticmethod
+    def _match_access_mode(
+        mode: str,
+        value: str | None,
+        whitelist: list[str],
+        blacklist: list[str],
+    ) -> bool:
+        """按 mode 判断单维度是否放行。
+
+        - value 为 None（如私聊消息没有 group_id）时该维度不作判断，直接放行。
+        - mode = "off" 时不作限制，直接放行。
+        - mode = "whitelist" 时，仅名单内的号码放行；名单为空时全部拒绝。
+        - mode = "blacklist" 时，名单内的号码拦截，其余放行。
+        - 自动将列表项与待匹配值统一转为去除两端空白的字符串，兼容数字与字符串配置。
+        """
+        if mode == "off":
+            return True
+        if value is None:
+            return True
+        val_str = str(value).strip()
+        if mode == "whitelist":
+            return val_str in {str(item).strip() for item in whitelist}
+        if mode == "blacklist":
+            return val_str not in {str(item).strip() for item in blacklist}
+        return True
+
+    def _is_access_allowed(
+        self, message: dict, access: AccessControlConfig | None = None
+    ) -> bool:
+        """群维度与用户维度都通过才放行（两个维度是「与」关系）。"""
+        if access is None:
+            return True
+
+        group_id = get_group_id(message)
+        if not self._match_access_mode(
+            access.group_mode, group_id, access.group_whitelist, access.group_blacklist
+        ):
+            self.ctx.logger.debug(
+                "link_parser | 访问控制拦截：群 %s 未通过 group_mode=%s",
+                group_id,
+                access.group_mode,
+            )
+            return False
+
+        user_id = get_user_id(message)
+        if not self._match_access_mode(
+            access.user_mode, user_id, access.user_whitelist, access.user_blacklist
+        ):
+            self.ctx.logger.debug(
+                "link_parser | 访问控制拦截：用户 %s 未通过 user_mode=%s",
+                user_id,
+                access.user_mode,
+            )
+            return False
+
+        return True
 
     # ── 状态提示与错误归因 ──────────────────────────────────────────────
 
@@ -480,7 +750,8 @@ class LinkParserPlugin(MaiBotPlugin):
             nodes.append([text_segment(text)])
 
         media_headers = result.extra.get("media_headers")
-        downloaded = await self._download_images(image_urls, media_headers)
+        proxy = result.extra.get("proxy")
+        downloaded = await self._download_images(image_urls, media_headers, proxy=proxy)
         try:
             for image_path in downloaded:
                 nodes.append([image_segment(image_path)])
@@ -510,16 +781,23 @@ class LinkParserPlugin(MaiBotPlugin):
         self,
         image_urls: list[str],
         media_headers: dict | None,
+        proxy: str | None = None,
     ) -> list[Path]:
         """下载图片列表，返回下载成功的本地路径（调用方负责清理）。"""
         downloaded: list[Path] = []
         for image_url in image_urls:
             if not image_url:
                 continue
+            # 若已经是本地已存在的文件路径（如已生成的动图 GIF 或高斯模糊封面）
+            local_p = Path(image_url)
+            if local_p.exists() and local_p.is_file():
+                downloaded.append(local_p)
+                continue
             try:
                 image_path = await self._downloader.download_image(
                     image_url,
                     headers=media_headers,
+                    proxy=proxy,
                 )
                 if image_path is None or not image_path.exists():
                     self.ctx.logger.warning("link_parser | 图片下载失败: %s", image_url)
@@ -533,7 +811,8 @@ class LinkParserPlugin(MaiBotPlugin):
         """下载并发送解析结果中的原始图片。"""
         image_urls = [u for u in dict.fromkeys([*result.images, result.cover_image]) if u]
         media_headers = result.extra.get("media_headers")
-        downloaded = await self._download_images(image_urls, media_headers)
+        proxy = result.extra.get("proxy")
+        downloaded = await self._download_images(image_urls, media_headers, proxy=proxy)
         for image_path in downloaded:
             try:
                 ok = await send_image(message, image_path, self._api)

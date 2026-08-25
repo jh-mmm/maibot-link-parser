@@ -1,5 +1,7 @@
-# 知乎页面解析适配自 Zhalslar/astrbot_plugin_parser。
+# 知乎与 Pixiv 页面解析适配自 Zhalslar/astrbot_plugin_parser。
 aiohttp>=3.8.0
 beautifulsoup4>=4.13.0,<5.0.0
 curl_cffi>=0.13.0,<0.15.0
+Pillow>=10.0.0
 yt-dlp[default]>=2025.12.8
+

@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import logging
 import urllib.parse
 import urllib.request
@@ -12,7 +14,7 @@ from typing import Any
 
 import aiohttp
 
-logger = logging.getLogger("plugin.multi_platform_parser.sender")
+logger = logging.getLogger("plugin.com.maibot.link-parser.sender")
 
 
 class ApiSettings:
@@ -30,7 +32,7 @@ async def send_text(message: dict[str, Any], text: str, api: ApiSettings) -> boo
 
 
 async def send_image(message: dict[str, Any], path: Path, api: ApiSettings) -> bool:
-    return await _send_message(message, [{"type": "image", "data": {"file": _file_uri(path)}}], api, timeout=120)
+    return await _send_message(message, [image_segment(path)], api, timeout=120)
 
 
 async def send_video(message: dict[str, Any], path: Path, api: ApiSettings) -> bool:
@@ -64,20 +66,20 @@ async def send_forward(
         for node in nodes
     ]
 
-    if _is_private_message(message):
-        user_id = _get_user_id(message)
+    if is_private_message(message):
+        user_id = get_user_id(message)
         if not user_id:
-            logger.error("Cannot send private forward: missing user id")
+            logger.error("无法发送私聊合并转发: 缺少 user_id | message: %s", message)
             return False
         url = f"http://{api.host}:{api.port}/send_private_forward_msg"
-        payload = {"user_id": user_id, "messages": forward_nodes}
+        payload = {"user_id": int(user_id) if user_id.isdigit() else user_id, "messages": forward_nodes}
     else:
-        group_id = _get_group_id(message)
+        group_id = get_group_id(message)
         if not group_id:
-            logger.error("Cannot send group forward: missing group id")
+            logger.error("无法发送群聊合并转发: 缺少 group_id | message: %s", message)
             return False
         url = f"http://{api.host}:{api.port}/send_group_forward_msg"
-        payload = {"group_id": group_id, "messages": forward_nodes}
+        payload = {"group_id": int(group_id) if group_id.isdigit() else group_id, "messages": forward_nodes}
 
     return await _post_onebot(url, payload, api, timeout=120)
 
@@ -87,6 +89,13 @@ def text_segment(text: str) -> MessageSegment:
 
 
 def image_segment(path: Path) -> MessageSegment:
+    """构建 OneBot 图片消息段，优先转为 base64 提高跨环境/容器兼容性。"""
+    try:
+        if path.exists() and path.is_file():
+            b64_str = base64.b64encode(path.read_bytes()).decode("ascii")
+            return {"type": "image", "data": {"file": f"base64://{b64_str}"}}
+    except Exception as e:
+        logger.warning("图片转 base64 失败，降级为 file_uri: %s", e)
     return {"type": "image", "data": {"file": _file_uri(path)}}
 
 
@@ -97,22 +106,38 @@ async def _send_message(
     *,
     timeout: int,
 ) -> bool:
-    if _is_private_message(message):
-        user_id = _get_user_id(message)
+    if is_private_message(message):
+        user_id = get_user_id(message)
         if not user_id:
-            logger.error("Cannot send private message: missing user id")
+            logger.error("无法发送私聊消息: 缺少 user_id | message: %s", message)
             return False
         url = f"http://{api.host}:{api.port}/send_private_msg"
-        payload = {"user_id": user_id, "message": segments}
+        payload = {"user_id": int(user_id) if user_id.isdigit() else user_id, "message": segments}
     else:
-        group_id = _get_group_id(message)
+        group_id = get_group_id(message)
         if not group_id:
-            logger.error("Cannot send group message: missing group id")
+            logger.error("无法发送群消息: 缺少 group_id | message: %s", message)
             return False
         url = f"http://{api.host}:{api.port}/send_group_msg"
-        payload = {"group_id": group_id, "message": segments}
+        payload = {"group_id": int(group_id) if group_id.isdigit() else group_id, "message": segments}
 
     return await _post_onebot(url, payload, api, timeout=timeout)
+
+
+def _check_onebot_json(response_text: str, url: str, payload: dict[str, Any]) -> bool:
+    try:
+        data = json.loads(response_text)
+        if isinstance(data, dict):
+            status = data.get("status")
+            retcode = data.get("retcode")
+            if status == "failed" or (retcode is not None and retcode != 0):
+                msg = data.get("message") or data.get("wording") or data.get("msg") or response_text
+                logger.error("OneBot 接口拒绝发送 (retcode=%s): %s | URL: %s", retcode, msg, url)
+                return False
+            return True
+    except Exception:
+        pass
+    return True
 
 
 async def _post_onebot(url: str, payload: dict[str, Any], api: ApiSettings, *, timeout: int) -> bool:
@@ -124,22 +149,25 @@ async def _post_onebot(url: str, payload: dict[str, Any], api: ApiSettings, *, t
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload, headers=headers, timeout=timeout) as response:
-                if response.status == 200:
-                    return True
-                if response.status in (401, 403) and token:
-                    retry_url = f"{url}?access_token={urllib.parse.quote(token)}"
-                    async with session.post(retry_url, json=payload, headers=headers, timeout=timeout) as retry:
-                        if retry.status == 200:
-                            return True
-                        logger.error("OneBot retry failed: HTTP %s %s", retry.status, await retry.text())
-                        return False
-                logger.error("OneBot request failed: HTTP %s %s", response.status, await response.text())
-                return False
+                text = await response.text()
+                if response.status != 200:
+                    if response.status in (401, 403) and token:
+                        retry_url = f"{url}?access_token={urllib.parse.quote(token)}"
+                        async with session.post(retry_url, json=payload, headers=headers, timeout=timeout) as retry:
+                            retry_text = await retry.text()
+                            if retry.status == 200:
+                                return _check_onebot_json(retry_text, retry_url, payload)
+                            logger.error("OneBot 重试失败: HTTP %s %s", retry.status, retry_text)
+                            return False
+                    logger.error("OneBot 请求失败: HTTP %s %s", response.status, text)
+                    return False
+
+                return _check_onebot_json(text, url, payload)
     except asyncio.TimeoutError:
-        logger.error("OneBot request timed out: %s", url)
+        logger.error("OneBot 请求超时: %s", url)
         return False
     except Exception as exc:
-        logger.error("OneBot request error: %s", exc)
+        logger.error("OneBot 请求异常: %s (请检查 config.toml 中 [onebot] 的 host 和 port 是否正确连接到 NapCat/go-cqhttp)", exc)
         return False
 
 
@@ -150,132 +178,96 @@ def _file_uri(path: Path) -> str:
     return "file:///" + urllib.request.pathname2url(value).lstrip("/")
 
 
-def _is_private_message(message: dict[str, Any]) -> bool:
-
-    # 兼容旧结构
-    message_info = message.get("message_info")
-
-    if isinstance(message_info, dict):
-
-        return (
-            message_info.get("group_info") is None
-        )
-
-
-    # 兼容 MaiBot 新结构
-
-    if _get_group_id(message):
+def is_private_message(message: dict[str, Any]) -> bool:
+    if not isinstance(message, dict):
+        return True
+    m_type = str(message.get("message_type") or message.get("chat_type") or "").strip().lower()
+    if m_type == "group":
         return False
+    if m_type == "private":
+        return True
+    return get_group_id(message) is None
 
 
-    return True
+_is_private_message = is_private_message
 
 
-def _get_user_id(message: dict[str, Any]) -> str | None:
+def get_user_id(message: dict[str, Any]) -> str | None:
+    if not isinstance(message, dict):
+        return None
 
-    message_info = message.get(
-        "message_info",
-        {}
-    )
-
+    # 1. message_info.user_info
+    message_info = message.get("message_info")
     if isinstance(message_info, dict):
-
-        user_info = message_info.get(
-            "user_info",
-            {}
-        )
-
+        user_info = message_info.get("user_info")
         if isinstance(user_info, dict):
+            uid = user_info.get("user_id") or user_info.get("userId")
+            if uid is not None and str(uid).strip():
+                return str(uid).strip()
 
-            user_id = user_info.get(
-                "user_id"
-            )
+    # 2. 顶层直接字段
+    for key in ("user_id", "userId", "sender_id", "sender_uin", "qq"):
+        val = message.get(key)
+        if val is not None and str(val).strip():
+            return str(val).strip()
 
-            if user_id:
-                return str(user_id)
-
-
-    for key in (
-        "user_id",
-        "userId",
-    ):
-
-        value = message.get(key)
-
-        if value:
-            return str(value)
-
-
-    sender = message.get(
-        "sender",
-        {}
-    )
-
+    # 3. sender 对象
+    sender = message.get("sender")
     if isinstance(sender, dict):
+        uid = sender.get("user_id") or sender.get("userId")
+        if uid is not None and str(uid).strip():
+            return str(uid).strip()
 
-        user_id = sender.get(
-            "user_id"
-        )
-
-        if user_id:
-            return str(user_id)
-
-
-    return None
-
-
-def _get_group_id(message: dict[str, Any]) -> str | None:
-
-    # MaiBot 原结构
-    message_info = message.get(
-        "message_info",
-        {}
-    )
-
-    if isinstance(message_info, dict):
-
-        group_info = message_info.get(
-            "group_info"
-        )
-
-        if isinstance(group_info, dict):
-
-            group_id = group_info.get(
-                "group_id"
-            )
-
-            if group_id:
-                return str(group_id)
-
-
-    # 兼容直接字段
-
-    for key in (
-        "group_id",
-        "groupId",
-    ):
-
-        value = message.get(key)
-
-        if value:
-            return str(value)
-
-
-    # 兼容 session
-
-    session = message.get(
-        "session",
-        {}
-    )
-
+    # 4. session 对象
+    session = message.get("session")
     if isinstance(session, dict):
-
-        value = session.get(
-            "group_id"
-        )
-
-        if value:
-            return str(value)
-
+        uid = session.get("user_id") or session.get("userId")
+        if uid is not None and str(uid).strip():
+            return str(uid).strip()
 
     return None
+
+
+_get_user_id = get_user_id
+
+
+def get_group_id(message: dict[str, Any]) -> str | None:
+    if not isinstance(message, dict):
+        return None
+
+    # 1. 顶层直接字段
+    for key in ("group_id", "groupId", "group_uin", "target_id", "peer_id"):
+        val = message.get(key)
+        if val is not None and str(val).strip() and str(val).strip() != "0":
+            return str(val).strip()
+
+    # 2. message_info.group_info 结构 (MaiBot 原结构)
+    message_info = message.get("message_info")
+    if isinstance(message_info, dict):
+        group_info = message_info.get("group_info")
+        if isinstance(group_info, dict):
+            gid = group_info.get("group_id") or group_info.get("groupId")
+            if gid is not None and str(gid).strip() and str(gid).strip() != "0":
+                return str(gid).strip()
+
+    # 3. session / context / chat_info 结构
+    for parent_key in ("session", "context", "chat_info"):
+        parent = message.get(parent_key)
+        if isinstance(parent, dict):
+            gid = parent.get("group_id") or parent.get("groupId")
+            if gid is not None and str(gid).strip() and str(gid).strip() != "0":
+                return str(gid).strip()
+
+    # 4. session_id / chat_id / stream_id (如 "group_123456" 或 "group:123456")
+    for key in ("session_id", "chat_id", "stream_id"):
+        val = str(message.get(key) or "")
+        if val.startswith("group_") or val.startswith("group:"):
+            extracted = val.split("_", 1)[-1].split(":", 1)[-1]
+            if extracted.isdigit():
+                return extracted
+
+    return None
+
+
+_get_group_id = get_group_id
+

@@ -19,19 +19,21 @@ class MediaDownloader:
     支持流式下载，提供大小限制和超时保护。
     """
 
-    def __init__(self, runtime_dir: str | Path, max_size_mb: int = 50, timeout: int = 60):
+    def __init__(self, runtime_dir: str | Path, max_size_mb: int = 50, timeout: int = 60, proxy: str = ""):
         self.runtime_dir = Path(runtime_dir)
         self.max_size_bytes = max_size_mb * 1024 * 1024
         self.timeout = timeout
+        self.proxy = proxy.strip()
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
 
-    async def download_video(self, url: str, headers: dict | None = None, filename: str | None = None) -> Path | None:
+    async def download_video(self, url: str, headers: dict | None = None, filename: str | None = None, proxy: str | None = None) -> Path | None:
         """下载视频文件
         
         Args:
             url: 视频直链
             headers: 自定义请求头
             filename: 保存文件名，为空则自动生成
+            proxy: 自定义代理地址，为空使用默认代理
             
         Returns:
             下载成功返回文件路径，失败返回 None
@@ -40,7 +42,7 @@ class MediaDownloader:
             ext = self._guess_ext(url, default=".mp4")
             filename = f"video_{uuid4().hex[:8]}{ext}"
         
-        return await self._download(url, filename, headers)
+        return await self._download(url, filename, headers, proxy=proxy)
 
     async def download_youtube_video(
         self,
@@ -74,6 +76,9 @@ class MediaDownloader:
                 "quiet": True,
                 "no_warnings": True,
             }
+            if self.proxy:
+                options["proxy"] = self.proxy
+
             with yt_dlp.YoutubeDL(options) as ydl:
                 info = ydl.extract_info(url, download=False)
                 if not isinstance(info, dict):
@@ -98,15 +103,23 @@ class MediaDownloader:
                 path.unlink(missing_ok=True)
             return None
 
-    async def download_image(self, url: str, headers: dict | None = None, filename: str | None = None) -> Path | None:
+    async def download_image(self, url: str, headers: dict | None = None, filename: str | None = None, proxy: str | None = None) -> Path | None:
         """下载图片文件"""
         if not filename:
             ext = self._guess_ext(url, default=".jpg")
             filename = f"img_{uuid4().hex[:8]}{ext}"
         
-        return await self._download(url, filename, headers)
+        return await self._download(url, filename, headers, proxy=proxy)
 
-    async def _download(self, url: str, filename: str, headers: dict | None = None) -> Path | None:
+    async def download_file(self, url: str, filename: str | None = None, headers: dict | None = None, proxy: str | None = None) -> Path | None:
+        """通用文件下载（用于 zip、bin 等任意文件）"""
+        if not filename:
+            ext = self._guess_ext(url, default=".bin")
+            filename = f"file_{uuid4().hex[:8]}{ext}"
+        
+        return await self._download(url, filename, headers, proxy=proxy)
+
+    async def _download(self, url: str, filename: str, headers: dict | None = None, proxy: str | None = None) -> Path | None:
         """通用流式下载"""
         save_path = self.runtime_dir / filename
         default_headers = {
@@ -115,10 +128,12 @@ class MediaDownloader:
         if headers:
             default_headers.update(headers)
         
+        target_proxy = proxy if proxy is not None else (self.proxy or None)
+
         try:
             timeout = aiohttp.ClientTimeout(total=self.timeout)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(url, headers=default_headers, allow_redirects=True) as resp:
+                async with session.get(url, headers=default_headers, allow_redirects=True, proxy=target_proxy) as resp:
                     if resp.status >= 400:
                         logger.warning(f"下载失败: HTTP {resp.status} — {url}")
                         return None
@@ -165,7 +180,7 @@ class MediaDownloader:
         if "." in path.split("/")[-1]:
             ext = "." + path.split(".")[-1].lower()
             if ext in (".mp4", ".webm", ".mkv", ".mov", ".avi", ".flv",
-                       ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"):
+                       ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".zip", ".pdf", ".txt"):
                 return ext
         return default
 
@@ -173,7 +188,7 @@ class MediaDownloader:
         """清理运行时目录中的临时文件"""
         if self.runtime_dir.exists():
             for f in self.runtime_dir.iterdir():
-                if f.is_file() and f.suffix in (".mp4", ".webm", ".jpg", ".jpeg", ".png", ".gif"):
+                if f.is_file() and f.suffix in (".mp4", ".webm", ".jpg", ".jpeg", ".png", ".gif", ".zip", ".pdf", ".txt"):
                     try:
                         f.unlink()
                     except OSError:

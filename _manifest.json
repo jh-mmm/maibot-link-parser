@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
-  "version": "1.2.0",
+  "version": "1.4.0",
   "name": "多平台链接解析器",
-  "description": "自动解析知乎、微博、YouTube、Twitter(X) 链接，并直接发送文本解析结果和视频回复",
+  "description": "自动解析知乎、微博、YouTube、Twitter(X)、Pixiv 链接，并直接发送文本解析结果和媒体回复",
   "author": {
     "name": "jhmmm",
     "url": "https://github.com/jh-mmm"
@@ -37,6 +37,11 @@
       "type": "python_package",
       "name": "curl_cffi",
       "version_spec": ">=0.13.0,<0.15.0"
+    },
+    {
+      "type": "python_package",
+      "name": "Pillow",
+      "version_spec": ">=10.0.0"
     },
     {
       "type": "python_package",

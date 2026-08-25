@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from .base import BaseParser, ParseResult
+from .pixiv import PixivParser
 from .twitter import TwitterParser
 from .weibo import WeiboParser
 from .youtube import YouTubeParser
@@ -17,6 +18,7 @@ ALL_PARSERS: list[type[BaseParser]] = [
     WeiboParser,
     YouTubeParser,
     TwitterParser,
+    PixivParser,
 ]
 
 __all__ = [
@@ -27,4 +29,6 @@ __all__ = [
     "WeiboParser",
     "YouTubeParser",
     "TwitterParser",
+    "PixivParser",
 ]
+
