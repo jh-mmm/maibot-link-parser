@@ -44,12 +44,12 @@ class PluginSectionConfig(PluginConfigBase):
         json_schema_extra={"label": "插件标识", "disabled": True, "hidden": True},
     )
     config_version: str = Field(
-        default="1.4.1",
+        default="1.4.2",
         description="配置文件版本号",
         json_schema_extra={"label": "配置版本", "disabled": True, "hidden": True},
     )
     version: str = Field(
-        default="1.4.1",
+        default="1.4.2",
         description="插件发布版本号",
         json_schema_extra={"label": "插件版本", "disabled": True, "hidden": True},
     )
