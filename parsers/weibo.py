@@ -26,6 +26,7 @@ _WEIBO_MEDIA_HEADERS = {
 class WeiboParser(BaseParser):
     platform_name: ClassVar[str] = "微博"
     platform_icon: ClassVar[str] = "🍊"
+    config_key: ClassVar[str] = "weibo"
     url_patterns: ClassVar[list[re.Pattern]] = [
         re.compile(r"(?:https?://)?(?:www\.)?weibo\.com/(\d+)/([0-9a-zA-Z]+)"),
         re.compile(r"(?:https?://)?m\.weibo\.cn/(?:status|detail|\d+)/([0-9a-zA-Z]+)"),
@@ -78,7 +79,7 @@ class WeiboParser(BaseParser):
         try:
             data = await fetch_json(api_url, headers=headers, allow_redirects=False, timeout=self._timeout)
         except Exception as e:
-            logger.warning(f"微博 API 请求失败: {e}")
+            logger.warning("微博 API 请求失败: %s", e)
             raise RuntimeError("微博接口请求失败，未获取到可解析数据") from e
 
         if data.get("ok") != 1:
@@ -113,7 +114,7 @@ class WeiboParser(BaseParser):
             if not cover and page_info.get("page_pic", {}).get("url"):
                 cover = page_info["page_pic"]["url"]
 
-        return ParseResult(
+        return self._make_result(
             title="微博动态",
             author=author_name,
             author_avatar=author_avatar,
@@ -122,8 +123,6 @@ class WeiboParser(BaseParser):
             images=images,
             video_url=video_url,
             url=full_url,
-            platform=self.platform_name,
-            platform_icon=self.platform_icon,
             stats={"likes": likes, "comments": comments, "reposts": reposts},
             extra={"media_headers": _WEIBO_MEDIA_HEADERS},
         )

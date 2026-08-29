@@ -9,7 +9,6 @@ from __future__ import annotations
 import html
 import logging
 import re
-from typing import Optional
 
 import aiohttp
 
@@ -50,9 +49,10 @@ _WHITESPACE_PATTERN = re.compile(r"\s+")
 
 async def fetch_json(
     url: str,
-    headers: Optional[dict[str, str]] = None,
+    headers: dict[str, str] | None = None,
     timeout: int = 15,
     allow_redirects: bool = True,
+    session: aiohttp.ClientSession | None = None,
 ) -> dict:
     """发起 HTTP GET 请求并返回 JSON 响应。
 
@@ -61,6 +61,7 @@ async def fetch_json(
         headers: 自定义请求头，为 None 时使用 COMMON_HEADERS。
         timeout: 请求超时时间（秒）。
         allow_redirects: 是否跟随 HTTP 重定向。
+        session: 可选的已有 ClientSession 实例，用于复用连接。
 
     Returns:
         解析后的 JSON 字典。
@@ -72,16 +73,20 @@ async def fetch_json(
     request_headers = {**COMMON_HEADERS, **(headers or {})}
     client_timeout = aiohttp.ClientTimeout(total=timeout)
 
+    async def _do_fetch(sess: aiohttp.ClientSession) -> dict:
+        async with sess.get(
+            url, headers=request_headers, allow_redirects=allow_redirects
+        ) as response:
+            response.raise_for_status()
+            data = await response.json(content_type=None)
+            logger.debug("成功获取 JSON: %s (状态码 %d)", url, response.status)
+            return data
+
     try:
-        async with aiohttp.ClientSession(
-            timeout=client_timeout,
-            headers=request_headers,
-        ) as session:
-            async with session.get(url, allow_redirects=allow_redirects) as response:
-                response.raise_for_status()
-                data = await response.json(content_type=None)
-                logger.debug("成功获取 JSON: %s (状态码 %d)", url, response.status)
-                return data
+        if session is not None and not session.closed:
+            return await _do_fetch(session)
+        async with aiohttp.ClientSession(timeout=client_timeout) as sess:
+            return await _do_fetch(sess)
     except aiohttp.ContentTypeError as exc:
         logger.error("响应内容无法解析为 JSON: %s — %s", url, exc)
         raise ValueError(f"非 JSON 响应: {url}") from exc
@@ -92,8 +97,9 @@ async def fetch_json(
 
 async def fetch_text(
     url: str,
-    headers: Optional[dict[str, str]] = None,
+    headers: dict[str, str] | None = None,
     timeout: int = 15,
+    session: aiohttp.ClientSession | None = None,
 ) -> str:
     """发起 HTTP GET 请求并返回文本响应。
 
@@ -101,6 +107,7 @@ async def fetch_text(
         url: 请求目标 URL。
         headers: 自定义请求头，为 None 时使用 COMMON_HEADERS。
         timeout: 请求超时时间（秒）。
+        session: 可选的已有 ClientSession 实例，用于复用连接。
 
     Returns:
         响应文本内容。
@@ -111,16 +118,23 @@ async def fetch_text(
     request_headers = {**COMMON_HEADERS, **(headers or {})}
     client_timeout = aiohttp.ClientTimeout(total=timeout)
 
+    async def _do_fetch(sess: aiohttp.ClientSession) -> str:
+        async with sess.get(url, headers=request_headers) as response:
+            response.raise_for_status()
+            text = await response.text()
+            logger.debug(
+                "成功获取文本: %s (状态码 %d, 长度 %d)",
+                url,
+                response.status,
+                len(text),
+            )
+            return text
+
     try:
-        async with aiohttp.ClientSession(
-            timeout=client_timeout,
-            headers=request_headers,
-        ) as session:
-            async with session.get(url) as response:
-                response.raise_for_status()
-                text = await response.text()
-                logger.debug("成功获取文本: %s (状态码 %d, 长度 %d)", url, response.status, len(text))
-                return text
+        if session is not None and not session.closed:
+            return await _do_fetch(session)
+        async with aiohttp.ClientSession(timeout=client_timeout) as sess:
+            return await _do_fetch(sess)
     except aiohttp.ClientError as exc:
         logger.error("请求失败: %s — %s", url, exc)
         raise

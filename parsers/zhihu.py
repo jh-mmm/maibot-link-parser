@@ -509,6 +509,7 @@ def _extract_videos_from_state(
 class ZhihuParser(BaseParser):
     platform_name: ClassVar[str] = "知乎"
     platform_icon: ClassVar[str] = "💡"
+    config_key: ClassVar[str] = "zhihu"
     url_patterns: ClassVar[list[re.Pattern]] = [
         re.compile(r"(?:https?://)?(?:www\.)?zhihu\.com/question/(\d+)/answer/(\d+)"),
         re.compile(r"(?:https?://)?(?:www\.)?zhihu\.com/question/(\d+)(?:[?#]|$)"),

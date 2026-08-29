@@ -9,6 +9,7 @@ import json
 import logging
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -17,11 +18,12 @@ import aiohttp
 logger = logging.getLogger("plugin.com.maibot.link-parser.sender")
 
 
+@dataclass
 class ApiSettings:
-    host: str
-    port: int
-    token: str
-    bot_uin: str
+    host: str = "127.0.0.1"
+    port: int = 3000
+    token: str = ""
+    bot_uin: str = ""
 
 
 MessageSegment = dict[str, Any]
@@ -189,9 +191,6 @@ def is_private_message(message: dict[str, Any]) -> bool:
     return get_group_id(message) is None
 
 
-_is_private_message = is_private_message
-
-
 def get_user_id(message: dict[str, Any]) -> str | None:
     if not isinstance(message, dict):
         return None
@@ -226,9 +225,6 @@ def get_user_id(message: dict[str, Any]) -> str | None:
             return str(uid).strip()
 
     return None
-
-
-_get_user_id = get_user_id
 
 
 def get_group_id(message: dict[str, Any]) -> str | None:
@@ -267,7 +263,4 @@ def get_group_id(message: dict[str, Any]) -> str | None:
                 return extracted
 
     return None
-
-
-_get_group_id = get_group_id
 

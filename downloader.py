@@ -135,40 +135,49 @@ class MediaDownloader:
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(url, headers=default_headers, allow_redirects=True, proxy=target_proxy) as resp:
                     if resp.status >= 400:
-                        logger.warning(f"下载失败: HTTP {resp.status} — {url}")
+                        logger.warning("下载失败: HTTP %d — %s", resp.status, url)
                         return None
                     
                     # Check Content-Length if available
                     content_length = resp.content_length
                     if content_length and content_length > self.max_size_bytes:
-                        logger.warning(f"文件过大 ({content_length / 1024 / 1024:.1f}MB > {self.max_size_bytes / 1024 / 1024:.0f}MB): {url}")
+                        logger.warning(
+                            "文件过大 (%.1fMB > %dMB): %s",
+                            content_length / 1024 / 1024,
+                            self.max_size_bytes // 1024 // 1024,
+                            url,
+                        )
                         return None
                     
                     # Stream download with size check
                     downloaded = 0
+                    size_exceeded = False
                     with open(save_path, "wb") as f:
                         async for chunk in resp.content.iter_chunked(8192):
                             downloaded += len(chunk)
                             if downloaded > self.max_size_bytes:
-                                logger.warning(f"下载中断：文件超过大小限制 ({self.max_size_bytes / 1024 / 1024:.0f}MB)")
-                                f.close()
-                                save_path.unlink(missing_ok=True)
-                                return None
+                                size_exceeded = True
+                                break
                             f.write(chunk)
                     
-                    logger.info(f"下载完成: {save_path.name} ({downloaded / 1024:.1f}KB)")
+                    if size_exceeded:
+                        logger.warning("下载中断：文件超过大小限制 (%dMB)", self.max_size_bytes // 1024 // 1024)
+                        save_path.unlink(missing_ok=True)
+                        return None
+                    
+                    logger.info("下载完成: %s (%.1fKB)", save_path.name, downloaded / 1024)
                     return save_path
                     
         except aiohttp.ClientError as e:
-            logger.warning(f"下载网络错误: {e} — {url}")
+            logger.warning("下载网络错误: %s — %s", e, url)
             save_path.unlink(missing_ok=True)
             return None
-        except TimeoutError:
-            logger.warning(f"下载超时: {url}")
+        except (asyncio.TimeoutError, aiohttp.ServerTimeoutError, TimeoutError):
+            logger.warning("下载超时: %s", url)
             save_path.unlink(missing_ok=True)
             return None
         except Exception as e:
-            logger.error(f"下载异常: {e} — {url}", exc_info=True)
+            logger.error("下载异常: %s — %s", e, url, exc_info=True)
             save_path.unlink(missing_ok=True)
             return None
 

@@ -31,6 +31,7 @@ class TwitterParser(BaseParser):
 
     platform_name: ClassVar[str] = "Twitter"
     platform_icon: ClassVar[str] = "🐦"
+    config_key: ClassVar[str] = "twitter"
     url_patterns: ClassVar[list[re.Pattern]] = [
         # 标准格式: twitter.com/username/status/ID 或 x.com/username/status/ID
         re.compile(r"https?://(?:www\.)?twitter\.com/(\w+)/status/(\d+)"),

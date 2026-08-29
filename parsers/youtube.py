@@ -14,6 +14,7 @@ logger = logging.getLogger("plugin.com.maibot.link-parser.youtube")
 class YouTubeParser(BaseParser):
     platform_name: ClassVar[str] = "YouTube"
     platform_icon: ClassVar[str] = "▶️"
+    config_key: ClassVar[str] = "youtube"
     url_patterns: ClassVar[list[re.Pattern]] = [
         re.compile(r"(?:https?://)?(?:www\.)?youtube\.com/watch\?v=([A-Za-z0-9_-]+)"),
         re.compile(r"(?:https?://)?youtu\.be/([A-Za-z0-9_-]+)"),
@@ -36,7 +37,7 @@ class YouTubeParser(BaseParser):
             try:
                 return await self._parse_with_api(vid, full_url)
             except Exception as e:
-                logger.warning(f"YouTube Data API 请求失败: {e}，将回退到无 Key 模式")
+                logger.warning("YouTube Data API 请求失败: %s，将回退到无 Key 模式", e)
                 
         return await self._parse_with_noembed(vid, full_url)
 
@@ -47,7 +48,7 @@ class YouTubeParser(BaseParser):
         
         items = data.get("items", [])
         if not items:
-            return ParseResult(title="YouTube Video", content="视频不存在或被隐藏", url=url, platform=self.platform_name, platform_icon=self.platform_icon)
+            return self._make_result(title="YouTube Video", content="视频不存在或被隐藏", url=url)
         
         item = items[0]
         snippet = item.get("snippet", {})
@@ -71,13 +72,11 @@ class YouTubeParser(BaseParser):
         duration_str = content_details.get("duration", "PT0S")
         duration_sec = self._parse_iso8601_duration(duration_str)
         
-        return ParseResult(
+        return self._make_result(
             title=title,
             author=author,
             cover_image=cover,
             url=url,
-            platform=self.platform_name,
-            platform_icon=self.platform_icon,
             video_duration=duration_sec,
             video_url=url,
             stats={"views": view_count, "likes": like_count, "comments": comment_count},
@@ -95,19 +94,17 @@ class YouTubeParser(BaseParser):
             data = await fetch_json(api_url, timeout=self._timeout)
             
             if "error" in data:
-                return ParseResult(title="YouTube Video", content=data.get("error"), url=url, platform=self.platform_name, platform_icon=self.platform_icon)
+                return self._make_result(title="YouTube Video", content=data.get("error", ""), url=url)
                 
             title = data.get("title", "")
             author = data.get("author_name", "")
             cover = f"https://img.youtube.com/vi/{vid}/maxresdefault.jpg"
             
-            return ParseResult(
+            return self._make_result(
                 title=title,
                 author=author,
                 cover_image=cover,
                 url=url,
-                platform=self.platform_name,
-                platform_icon=self.platform_icon,
                 video_url=url,
                 extra={
                     "video_downloader": "yt-dlp",
@@ -115,13 +112,11 @@ class YouTubeParser(BaseParser):
                 },
             )
         except Exception as e:
-            logger.warning(f"YouTube noembed API 请求失败: {e}")
-            return ParseResult(
+            logger.warning("YouTube noembed API 请求失败: %s", e)
+            return self._make_result(
                 title="YouTube Video",
                 content="获取视频信息失败",
                 url=url,
-                platform=self.platform_name,
-                platform_icon=self.platform_icon,
             )
 
     def _parse_iso8601_duration(self, duration: str) -> int:

@@ -60,6 +60,17 @@ class ParseResult:
         """是否包含图片内容。"""
         return bool(self.images) or bool(self.cover_image)
 
+    @property
+    def unique_image_urls(self) -> list[str]:
+        """去重后的图片 URL 列表（封面排在首位）。"""
+        seen: set[str] = set()
+        result: list[str] = []
+        for u in ([self.cover_image] + self.images):
+            if u and u not in seen:
+                seen.add(u)
+                result.append(u)
+        return result
+
     def stats_text(self) -> str:
         """将互动数据格式化为可读文本。
 
@@ -109,6 +120,7 @@ class BaseParser(ABC):
     url_patterns: ClassVar[list[re.Pattern]] = []
     platform_name: ClassVar[str] = ""
     platform_icon: ClassVar[str] = ""
+    config_key: ClassVar[str] = ""
 
     @abstractmethod
     async def parse(self, url: str, match: re.Match) -> ParseResult:

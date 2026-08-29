@@ -12,6 +12,11 @@ from maibot_sdk.types import HookMode, HookOrder
 
 from .downloader import MediaDownloader
 from .parsers.base import BaseParser, ParseResult
+from .parsers.pixiv import PixivParser
+from .parsers.twitter import TwitterParser
+from .parsers.weibo import WeiboParser
+from .parsers.youtube import YouTubeParser
+from .parsers.zhihu import ZhihuParser
 from .sender import (
     ApiSettings,
     MessageSegment,
@@ -44,12 +49,12 @@ class PluginSectionConfig(PluginConfigBase):
         json_schema_extra={"label": "插件标识", "disabled": True, "hidden": True},
     )
     config_version: str = Field(
-        default="1.4.2",
+        default="1.4.3",
         description="配置文件版本号",
         json_schema_extra={"label": "配置版本", "disabled": True, "hidden": True},
     )
     version: str = Field(
-        default="1.4.2",
+        default="1.4.3",
         description="插件发布版本号",
         json_schema_extra={"label": "插件版本", "disabled": True, "hidden": True},
     )
@@ -341,19 +346,14 @@ class LinkParserPlugin(MaiBotPlugin):
         )
 
         # OneBot HTTP 发送接口所需的连接信息
-        self._api = ApiSettings()
-        self._api.host = self.config.onebot.host
-        self._api.port = self.config.onebot.port
-        self._api.token = self.config.onebot.token
-        self._api.bot_uin = self.config.onebot.bot_uin
+        self._api = ApiSettings(
+            host=self.config.onebot.host,
+            port=self.config.onebot.port,
+            token=self.config.onebot.token,
+            bot_uin=self.config.onebot.bot_uin,
+        )
 
         self._parsers: list[BaseParser] = []
-
-        from .parsers.zhihu import ZhihuParser
-        from .parsers.weibo import WeiboParser
-        from .parsers.youtube import YouTubeParser
-        from .parsers.twitter import TwitterParser
-        from .parsers.pixiv import PixivParser
 
         common_timeout = self.config.general.timeout
         max_content_length = self.config.general.max_content_length
@@ -450,12 +450,12 @@ class LinkParserPlugin(MaiBotPlugin):
         # ── 2. 获取 stream_id（仅用于日志，发送已改为按 message 路由） ──
         stream_id = self._extract_stream_id(kwargs, message)
         if not stream_id:
-            self.ctx.logger.warning(
-                "link_parser: 无法获取 stream_id | kwargs_keys=%s | msg_keys=%s",
+            self.ctx.logger.debug(
+                "link_parser: 无法获取 stream_id（仅影响日志输出，不影响解析）| kwargs_keys=%s | msg_keys=%s",
                 list(kwargs.keys()),
                 list(message.keys()) if isinstance(message, dict) else type(message).__name__,
             )
-            return False
+            stream_id = "(unknown)"
 
         self.ctx.logger.info(
             "link_parser | stream=%s | text=%s",
@@ -468,7 +468,7 @@ class LinkParserPlugin(MaiBotPlugin):
             match = parser.match_url(raw_text)
             if match:
                 # 针对匹配到的平台执行独立的访问控制检查
-                platform_access = self._get_platform_access_config(parser.platform_name)
+                platform_access = self._get_platform_access_config(parser)
                 if isinstance(message, dict) and not self._is_access_allowed(
                     message, platform_access
                 ):
@@ -514,17 +514,12 @@ class LinkParserPlugin(MaiBotPlugin):
     # ── 访问控制 ────────────────────────────────────────────────────────
 
     def _get_platform_access_config(
-        self, platform_name: str
+        self, parser: BaseParser
     ) -> AccessControlConfig | None:
-        """根据平台显示名称获取对应的独立访问控制配置。"""
-        mapping: dict[str, AccessControlConfig | None] = {
-            "知乎": getattr(self.config, "zhihu", None),
-            "微博": getattr(self.config, "weibo", None),
-            "YouTube": getattr(self.config, "youtube", None),
-            "Twitter": getattr(self.config, "twitter", None),
-            "Pixiv": getattr(self.config, "pixiv", None),
-        }
-        return mapping.get(platform_name)
+        """根据解析器的 config_key 获取对应的独立访问控制配置。"""
+        if parser.config_key:
+            return getattr(self.config, parser.config_key, None)
+        return None
 
     @staticmethod
     def _match_access_mode(
@@ -704,7 +699,7 @@ class LinkParserPlugin(MaiBotPlugin):
         知乎解析与多图结果优先使用合并转发；未命中或失败时降级为逐条发送。
         发送成功时返回 True。
         """
-        image_urls = [u for u in dict.fromkeys([*result.images, result.cover_image]) if u]
+        image_urls = result.unique_image_urls
         use_forward = self.config.onebot.merge_send and (
             result.platform == "知乎" or len(image_urls) >= 2
         )
@@ -809,7 +804,7 @@ class LinkParserPlugin(MaiBotPlugin):
 
     async def _send_images(self, result: ParseResult, message: dict) -> None:
         """下载并发送解析结果中的原始图片。"""
-        image_urls = [u for u in dict.fromkeys([*result.images, result.cover_image]) if u]
+        image_urls = result.unique_image_urls
         media_headers = result.extra.get("media_headers")
         proxy = result.extra.get("proxy")
         downloaded = await self._download_images(image_urls, media_headers, proxy=proxy)

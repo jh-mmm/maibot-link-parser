@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import html as html_module
+import io
 import logging
 from pathlib import Path
 import re
@@ -23,12 +24,8 @@ import zipfile
 from curl_cffi import requests as curl_requests
 from PIL import Image, ImageFilter
 
-try:
-    from ..utils import clean_html, truncate_text
-    from .base import BaseParser, ParseResult
-except (ImportError, ValueError):
-    from utils import clean_html, truncate_text
-    from parsers.base import BaseParser, ParseResult
+from ..utils import clean_html, truncate_text
+from .base import BaseParser, ParseResult
 
 logger = logging.getLogger("plugin.com.maibot.link-parser.pixiv")
 
@@ -62,6 +59,7 @@ class PixivParser(BaseParser):
 
     platform_name: ClassVar[str] = "Pixiv"
     platform_icon: ClassVar[str] = "🎨"
+    config_key: ClassVar[str] = "pixiv"
     url_patterns: ClassVar[list[re.Pattern]] = [
         # 1. 插画 / 漫画 artworks 链接（支持多语言子路径如 /en/artworks/..., /zh/artworks/...）
         re.compile(
@@ -129,7 +127,8 @@ class PixivParser(BaseParser):
 
     async def parse(self, url: str, match: re.Match) -> ParseResult:
         full_url = match.group(0)
-        if not full_url.startswith("http") and not full_url.startswith("pid") and not full_url.startswith("PID") and not full_url.startswith("pixivid") and not full_url.startswith("PIXIVID"):
+        low = full_url.lower()
+        if not low.startswith("http") and not any(low.startswith(p) for p in ("pid", "pixivid")):
             full_url = "https://" + full_url
 
         pattern_str = match.re.pattern
