@@ -16,15 +16,16 @@ class YouTubeParser(BaseParser):
     platform_icon: ClassVar[str] = "▶️"
     config_key: ClassVar[str] = "youtube"
     url_patterns: ClassVar[list[re.Pattern]] = [
-        re.compile(r"(?:https?://)?(?:www\.)?youtube\.com/watch\?v=([A-Za-z0-9_-]+)"),
+        re.compile(r"(?:https?://)?(?:www\.|m\.)?youtube\.com/watch\?(?:[^&\s]+&)*v=([A-Za-z0-9_-]+)"),
         re.compile(r"(?:https?://)?youtu\.be/([A-Za-z0-9_-]+)"),
-        re.compile(r"(?:https?://)?(?:www\.)?youtube\.com/shorts/([A-Za-z0-9_-]+)"),
+        re.compile(r"(?:https?://)?(?:www\.|m\.)?youtube\.com/(?:shorts|live)/([A-Za-z0-9_-]+)"),
     ]
 
-    def __init__(self, api_key: str = "", cookies: str = "", timeout: int = 15):
+    def __init__(self, api_key: str = "", cookies: str = "", timeout: int = 15, proxy: str = ""):
         self.api_key = api_key
         self.cookies = cookies.strip()
         self._timeout = timeout
+        self.proxy = proxy.strip()
 
     async def parse(self, url: str, match: re.Match) -> ParseResult:
         full_url = match.group(0)
@@ -44,7 +45,7 @@ class YouTubeParser(BaseParser):
     async def _parse_with_api(self, vid: str, url: str) -> ParseResult:
         """使用 YouTube Data API 解析"""
         api_url = f"https://www.googleapis.com/youtube/v3/videos?id={vid}&key={self.api_key}&part=snippet,statistics,contentDetails"
-        data = await fetch_json(api_url, timeout=self._timeout)
+        data = await fetch_json(api_url, timeout=self._timeout, proxy=self.proxy)
         
         items = data.get("items", [])
         if not items:
@@ -59,11 +60,14 @@ class YouTubeParser(BaseParser):
         author = snippet.get("channelTitle", "")
         thumbnails = snippet.get("thumbnails", {})
         
-        cover = ""
-        if "maxres" in thumbnails:
-            cover = thumbnails["maxres"]["url"]
-        elif "high" in thumbnails:
-            cover = thumbnails["high"]["url"]
+        cover = (
+            thumbnails.get("maxres")
+            or thumbnails.get("standard")
+            or thumbnails.get("high")
+            or thumbnails.get("medium")
+            or thumbnails.get("default")
+            or {}
+        ).get("url", "")
         
         view_count = int(statistics.get("viewCount", 0))
         like_count = int(statistics.get("likeCount", 0))
@@ -76,6 +80,7 @@ class YouTubeParser(BaseParser):
             title=title,
             author=author,
             cover_image=cover,
+            images=[cover] if cover else [],
             url=url,
             video_duration=duration_sec,
             video_url=url,
@@ -83,6 +88,7 @@ class YouTubeParser(BaseParser):
             extra={
                 "video_downloader": "yt-dlp",
                 "youtube_cookies": self.cookies,
+                "proxy": self.proxy,
             },
         )
 
@@ -91,24 +97,26 @@ class YouTubeParser(BaseParser):
         api_url = f"https://noembed.com/embed?url=https://www.youtube.com/watch?v={vid}"
         
         try:
-            data = await fetch_json(api_url, timeout=self._timeout)
+            data = await fetch_json(api_url, timeout=self._timeout, proxy=self.proxy)
             
             if "error" in data:
                 return self._make_result(title="YouTube Video", content=data.get("error", ""), url=url)
                 
             title = data.get("title", "")
             author = data.get("author_name", "")
-            cover = f"https://img.youtube.com/vi/{vid}/maxresdefault.jpg"
+            cover = data.get("thumbnail_url") or f"https://img.youtube.com/vi/{vid}/hqdefault.jpg"
             
             return self._make_result(
                 title=title,
                 author=author,
                 cover_image=cover,
+                images=[cover] if cover else [],
                 url=url,
                 video_url=url,
                 extra={
                     "video_downloader": "yt-dlp",
                     "youtube_cookies": self.cookies,
+                    "proxy": self.proxy,
                 },
             )
         except Exception as e:

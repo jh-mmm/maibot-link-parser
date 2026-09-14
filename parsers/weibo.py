@@ -1,10 +1,15 @@
 """微博链接解析器"""
 from __future__ import annotations
 
+import json
 import logging
 import re
 from time import time
 from typing import ClassVar
+from uuid import uuid4
+
+import aiohttp
+from bs4 import BeautifulSoup
 
 from .base import BaseParser, ParseResult
 from ..utils import COMMON_HEADERS, clean_html, fetch_json, truncate_text
@@ -28,11 +33,16 @@ class WeiboParser(BaseParser):
     platform_icon: ClassVar[str] = "🍊"
     config_key: ClassVar[str] = "weibo"
     url_patterns: ClassVar[list[re.Pattern]] = [
-        re.compile(r"(?:https?://)?(?:www\.)?weibo\.com/(\d+)/([0-9a-zA-Z]+)"),
-        re.compile(r"(?:https?://)?m\.weibo\.cn/(?:status|detail|\d+)/([0-9a-zA-Z]+)"),
+        re.compile(r"(?:https?://)?(?:www\.)?weibo\.com/(?:u/)?(\d+)/([0-9a-zA-Z]+)"),
+        re.compile(r"(?:https?://)?(?:m\.weibo\.cn|(?:www\.)?weibo\.com)/(?:status|detail|\d+)/([0-9a-zA-Z]+)"),
         re.compile(
-            r"(?:https?://)?(?:www\.)?weibo\.com/tv/show/\d+:\d+\?mid=(\d+)"
+            r"(?:https?://)?(?:www\.)?weibo\.com/tv/show/(\d+:\d+|\d+)(?:\?(?:.*&)?mid=(\d+))?"
         ),
+        re.compile(r"(?:https?://)?(?:video|h5)\.weibo\.com/show\?(?:.*&)?fid=(\d+:\d+)"),
+        re.compile(
+            r"(?:https?://)?(?:(?:www\.)?weibo\.com/ttarticle/p/show\?(?:.*&)?id=|card\.weibo\.com/article/m/show/id/)(\d+)"
+        ),
+        re.compile(r"(?:https?://)?t\.cn/([0-9a-zA-Z]+)"),
     ]
 
     # base62 characters for mid/wid conversion
@@ -48,21 +58,177 @@ class WeiboParser(BaseParser):
             full_url = "https://" + full_url
 
         pattern_str = match.re.pattern
-        wid = ""
 
+        # 1. 微博官方短链 t.cn 处理：跟踪重定向到目标微博 URL
+        if "t\\.cn" in pattern_str:
+            resolved_url = await self._resolve_t_cn(full_url)
+            if not resolved_url:
+                raise RuntimeError("微博短链解析失败：未获取到重定向目标地址")
+            # 在重定向后的 URL 中查找匹配的解析器
+            for sub_pat in self.url_patterns:
+                if "t\\.cn" in sub_pat.pattern:
+                    continue
+                sub_match = sub_pat.search(resolved_url)
+                if sub_match:
+                    return await self.parse(resolved_url, sub_match)
+            raise RuntimeError(f"微博短链已重定向到非支持页面: {resolved_url}")
+
+        # 2. 视频页面 video.weibo.com 处理
+        if "video\\.weibo\\.com" in pattern_str:
+            fid = match.group(1)
+            return await self._parse_fid(fid, full_url)
+
+        # 3. 专栏文章 ttarticle / card.weibo.com 处理
+        if "ttarticle" in pattern_str or "card\\.weibo\\.com" in pattern_str:
+            article_id = match.group(1)
+            return await self._parse_article(article_id, full_url)
+
+        # 4. 普通微博动态处理
+        wid = ""
         if "tv/show" in pattern_str:
-            mid = match.group(1)
-            wid = self._mid_to_wid(mid)
-        elif "weibo\\.cn" in pattern_str:
+            mid = match.group(2) or match.group(1)
+            wid = self._mid_to_wid(mid) if mid.isdigit() else mid
+        elif "status" in pattern_str or "detail" in pattern_str or "weibo\\.cn" in pattern_str:
             wid = match.group(1)
         else:
             wid = match.group(2)
-            
+
         if self._is_numeric_mid(wid):
             wid = self._mid_to_wid(wid)
 
-        # 请求策略适配自 Zhalslar/astrbot_plugin_parser：使用移动端 XHR
-        # 请求头、时间戳参数且不跟随重定向，避免跳转到风控页后误判成功。
+        return await self._parse_status(wid, full_url)
+
+    async def _resolve_t_cn(self, short_url: str) -> str:
+        """解析 t.cn 短链重定向目标。"""
+        headers = {"User-Agent": COMMON_HEADERS["User-Agent"]}
+        try:
+            timeout = aiohttp.ClientTimeout(total=self._timeout)
+            async with aiohttp.ClientSession(timeout=timeout) as sess:
+                async with sess.get(short_url, headers=headers, allow_redirects=True) as resp:
+                    return str(resp.url)
+        except Exception as e:
+            logger.warning("追踪 t.cn 重定向失败: %s", e)
+            return ""
+
+    async def _parse_fid(self, fid: str, url: str) -> ParseResult:
+        """通过 H5 组件接口解析 video.weibo.com 视频。"""
+        req_url = f"https://h5.video.weibo.com/api/component?page=/show/{fid}"
+        headers = {
+            **COMMON_HEADERS,
+            "Referer": f"https://h5.video.weibo.com/show/{fid}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        }
+        post_content = {"data": json.dumps({"Component_Play_Playinfo": {"oid": fid}})}
+        try:
+            timeout = aiohttp.ClientTimeout(total=self._timeout)
+            async with aiohttp.ClientSession(timeout=timeout) as sess:
+                async with sess.post(req_url, data=post_content, headers=headers) as resp:
+                    if resp.status >= 400:
+                        raise RuntimeError(f"微博视频接口返回 HTTP {resp.status}")
+                    json_data = await resp.json(content_type=None)
+        except Exception as e:
+            logger.warning("微博视频接口请求失败: %s", e)
+            raise RuntimeError("微博视频接口请求失败") from e
+
+        play_info = json_data.get("data", {}).get("Component_Play_Playinfo", {})
+        if not play_info:
+            raise RuntimeError("未获取到有效微博视频数据")
+
+        user = play_info.get("reward", {}).get("user", {})
+        author_name = user.get("name", "微博用户")
+        avatar = user.get("profile_image_url", "")
+        title = play_info.get("title", "")
+        text = play_info.get("text", "")
+        content_text = clean_html(text) if text else title
+        content_text = truncate_text(content_text, self._max_content_length)
+
+        cover_url = play_info.get("cover_image", "")
+        if cover_url and not cover_url.startswith("http"):
+            cover_url = "https:" + cover_url
+
+        video_url = ""
+        video_url_dict = play_info.get("urls")
+        if isinstance(video_url_dict, dict) and video_url_dict:
+            first_mp4 = next(iter(video_url_dict.values()), "")
+            if first_mp4:
+                video_url = first_mp4 if first_mp4.startswith("http") else f"https:{first_mp4}"
+        if not video_url:
+            video_url = play_info.get("stream_url", "") or ""
+            if video_url and not video_url.startswith("http"):
+                video_url = "https:" + video_url
+
+        return self._make_result(
+            title=title or "微博视频",
+            author=author_name,
+            author_avatar=avatar,
+            content=content_text,
+            cover_image=cover_url,
+            images=[cover_url] if cover_url else [],
+            video_url=video_url,
+            url=url,
+            extra={"media_headers": _WEIBO_MEDIA_HEADERS},
+        )
+
+    async def _parse_article(self, article_id: str, url: str) -> ParseResult:
+        """解析微博专栏文章 (ttarticle / card.weibo.com)。"""
+        api_url = "https://card.weibo.com/article/m/aj/detail"
+        headers = {
+            **COMMON_HEADERS,
+            "Referer": f"https://card.weibo.com/article/m/show/id/{article_id}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        }
+        params = {
+            "_rid": str(uuid4()),
+            "id": article_id,
+            "_t": str(int(time() * 1000)),
+        }
+        try:
+            timeout = aiohttp.ClientTimeout(total=self._timeout)
+            async with aiohttp.ClientSession(timeout=timeout) as sess:
+                async with sess.post(api_url, data=params, headers=headers) as resp:
+                    if resp.status >= 400:
+                        raise RuntimeError(f"微博文章接口返回 HTTP {resp.status}")
+                    json_data = await resp.json(content_type=None)
+        except Exception as e:
+            logger.warning("微博文章接口请求失败: %s", e)
+            raise RuntimeError("微博文章接口请求失败") from e
+
+        data = json_data.get("data", {})
+        if not data or json_data.get("msg") != "success":
+            msg = json_data.get("msg") or "获取微博文章失败"
+            raise RuntimeError(f"微博文章无法访问：{msg}")
+
+        user_info = data.get("userinfo", {})
+        author_name = user_info.get("screen_name", "微博用户")
+        author_avatar = user_info.get("profile_image_url", "")
+        title = data.get("title", "微博专栏")
+        raw_html = data.get("content", "")
+        content_text = clean_html(raw_html)
+        content_text = truncate_text(content_text, self._max_content_length)
+
+        # 提取文章内的正文配图
+        soup = BeautifulSoup(raw_html, "html.parser")
+        images: list[str] = []
+        for img in soup.find_all("img"):
+            src = img.get("src")
+            if src and src.startswith("http"):
+                images.append(src)
+        images = list(dict.fromkeys(images))
+        cover = images[0] if images else ""
+
+        return self._make_result(
+            title=title,
+            author=author_name,
+            author_avatar=author_avatar,
+            content=content_text,
+            cover_image=cover,
+            images=images[:9],
+            url=url,
+            extra={"media_headers": _WEIBO_MEDIA_HEADERS},
+        )
+
+    async def _parse_status(self, wid: str, full_url: str) -> ParseResult:
+        """通过 m.weibo.cn 移动端接口解析微博动态。"""
         api_url = f"https://m.weibo.cn/statuses/show?id={wid}&_={int(time() * 1000)}"
         headers = {
             **COMMON_HEADERS,
@@ -203,7 +369,7 @@ class WeiboParser(BaseParser):
 
     def _is_numeric_mid(self, wid: str) -> bool:
         """判断 wid 是否是需要转换的数字 mid"""
-        return wid.isdigit() and len(wid) > 16
+        return wid.isdigit() and len(wid) >= 14
 
     def _mid_to_wid(self, mid: str) -> str:
         """将数字 mid 转换为 base62 编码的 wid"""

@@ -63,23 +63,25 @@ class PixivParser(BaseParser):
     url_patterns: ClassVar[list[re.Pattern]] = [
         # 1. 插画 / 漫画 artworks 链接（支持多语言子路径如 /en/artworks/..., /zh/artworks/...）
         re.compile(
-            r"(?:https?://)?(?:www\.)?pixiv\.net/(?:(?:en|zh|zh-tw|ja)/)?artworks/(\d+)"
+            r"(?:https?://)?(?:(?:www|touch|m)\.)?pixiv\.net/(?:(?:en|zh|zh-tw|ja)/)?artworks/(\d+)"
         ),
-        # 2. 旧版 member_illust.php 链接
+        # 2. 旧版 / 移动端 member_illust.php / illust.php 链接
         re.compile(
-            r"(?:https?://)?(?:www\.)?pixiv\.net/member_illust\.php\?(?:.*&)?illust_id=(\d+)"
+            r"(?:https?://)?(?:(?:www|touch|m)\.)?pixiv\.net/(?:member_illust|illust)\.php\?(?:.*&)?(?:illust_id|id)=(\d+)"
         ),
         # 3. 短链 /i/{id}
-        re.compile(r"(?:https?://)?(?:www\.)?pixiv\.net/i/(\d+)"),
+        re.compile(r"(?:https?://)?(?:(?:www|touch|m)\.)?pixiv\.net/i/(\d+)"),
         # 4. 小说链接
         re.compile(
-            r"(?:https?://)?(?:www\.)?pixiv\.net/(?:(?:en|zh|zh-tw|ja)/)?novel/show\.php\?id=(\d+)"
+            r"(?:https?://)?(?:(?:www|touch|m)\.)?pixiv\.net/(?:(?:en|zh|zh-tw|ja)/)?novel/show\.php\?(?:.*&)?id=(\d+)"
         ),
         re.compile(
-            r"(?:https?://)?(?:www\.)?pixiv\.net/(?:(?:en|zh|zh-tw|ja)/)?novel/(\d+)"
+            r"(?:https?://)?(?:(?:www|touch|m)\.)?pixiv\.net/(?:(?:en|zh|zh-tw|ja)/)?novel/(\d+)"
         ),
         # 5. 纯文本 PID / PixivID 指令触发 (如 pid 123456, PID: 123456, pixivid 123456)
         re.compile(r"(?i)(?<![a-zA-Z0-9_-])(?:pid|pixivid)\s*[:=]?\s*(\d+)"),
+        # 6. 纯文本 NID 小说指令触发 (如 nid 123456, NID: 123456)
+        re.compile(r"(?i)(?<![a-zA-Z0-9_-])nid\s*[:=]?\s*(\d+)"),
     ]
 
     def __init__(
@@ -121,6 +123,13 @@ class PixivParser(BaseParser):
         self._runtime_dir = Path(runtime_dir) if runtime_dir else Path(__file__).resolve().parent.parent / "runtime" / "link-parser"
         self._runtime_dir.mkdir(parents=True, exist_ok=True)
 
+    def _media_headers(self) -> dict[str, str]:
+        """构造用于下载 Pixiv 图片与媒体的防盗链请求头（包含登录 Cookie）。"""
+        headers = {**_PIXIV_MEDIA_HEADERS}
+        if self._cookies:
+            headers["Cookie"] = self._cookies
+        return headers
+
     # ------------------------------------------------------------------
     # 解析入口
     # ------------------------------------------------------------------
@@ -128,14 +137,14 @@ class PixivParser(BaseParser):
     async def parse(self, url: str, match: re.Match) -> ParseResult:
         full_url = match.group(0)
         low = full_url.lower()
-        if not low.startswith("http") and not any(low.startswith(p) for p in ("pid", "pixivid")):
+        if not low.startswith("http") and not any(low.startswith(p) for p in ("pid", "pixivid", "nid")):
             full_url = "https://" + full_url
 
         pattern_str = match.re.pattern
         matched_id = match.group(1)
 
-        # 判断是否为小说链接
-        if "novel" in pattern_str:
+        # 判断是否为小说链接或 NID 纯文本触发
+        if "novel" in pattern_str or "nid" in pattern_str.lower():
             canonical_url = f"{PIXIV_BASE}/novel/show.php?id={matched_id}"
             return await self._parse_novel(matched_id, canonical_url)
 
@@ -279,7 +288,7 @@ class PixivParser(BaseParser):
             url=original_url,
             stats=stats,
             extra={
-                "media_headers": _PIXIV_MEDIA_HEADERS,
+                "media_headers": self._media_headers(),
                 "proxy": self._proxy,
             },
         )
@@ -379,7 +388,7 @@ class PixivParser(BaseParser):
             url=original_url,
             stats=stats,
             extra={
-                "media_headers": _PIXIV_MEDIA_HEADERS,
+                "media_headers": self._media_headers(),
                 "proxy": self._proxy,
             },
         )
@@ -465,7 +474,7 @@ class PixivParser(BaseParser):
             url=original_url,
             stats=stats,
             extra={
-                "media_headers": _PIXIV_MEDIA_HEADERS,
+                "media_headers": self._media_headers(),
                 "proxy": self._proxy,
             },
         )
@@ -555,7 +564,7 @@ class PixivParser(BaseParser):
             url=original_url,
             stats=stats,
             extra={
-                "media_headers": _PIXIV_MEDIA_HEADERS,
+                "media_headers": self._media_headers(),
                 "proxy": self._proxy,
             },
         )
@@ -583,9 +592,7 @@ class PixivParser(BaseParser):
 
         def download_zip() -> None:
             proxies = {"http": self._proxy, "https": self._proxy} if self._proxy else None
-            headers = {**_PIXIV_MEDIA_HEADERS}
-            if self._cookies:
-                headers["Cookie"] = self._cookies
+            headers = self._media_headers()
             resp = curl_requests.get(
                 zip_url,
                 headers=headers,
@@ -648,9 +655,7 @@ class PixivParser(BaseParser):
 
         def do_download_and_blur() -> Path | None:
             proxies = {"http": self._proxy, "https": self._proxy} if self._proxy else None
-            headers = {**_PIXIV_MEDIA_HEADERS}
-            if self._cookies:
-                headers["Cookie"] = self._cookies
+            headers = self._media_headers()
             resp = curl_requests.get(
                 image_url,
                 headers=headers,

@@ -53,6 +53,7 @@ async def fetch_json(
     timeout: int = 15,
     allow_redirects: bool = True,
     session: aiohttp.ClientSession | None = None,
+    proxy: str | None = None,
 ) -> dict:
     """发起 HTTP GET 请求并返回 JSON 响应。
 
@@ -62,6 +63,7 @@ async def fetch_json(
         timeout: 请求超时时间（秒）。
         allow_redirects: 是否跟随 HTTP 重定向。
         session: 可选的已有 ClientSession 实例，用于复用连接。
+        proxy: HTTP/HTTPS 代理地址。
 
     Returns:
         解析后的 JSON 字典。
@@ -72,10 +74,14 @@ async def fetch_json(
     """
     request_headers = {**COMMON_HEADERS, **(headers or {})}
     client_timeout = aiohttp.ClientTimeout(total=timeout)
+    req_proxy = proxy.strip() if proxy and proxy.strip() else None
 
     async def _do_fetch(sess: aiohttp.ClientSession) -> dict:
         async with sess.get(
-            url, headers=request_headers, allow_redirects=allow_redirects
+            url,
+            headers=request_headers,
+            allow_redirects=allow_redirects,
+            proxy=req_proxy,
         ) as response:
             response.raise_for_status()
             data = await response.json(content_type=None)
@@ -100,6 +106,7 @@ async def fetch_text(
     headers: dict[str, str] | None = None,
     timeout: int = 15,
     session: aiohttp.ClientSession | None = None,
+    proxy: str | None = None,
 ) -> str:
     """发起 HTTP GET 请求并返回文本响应。
 
@@ -108,6 +115,7 @@ async def fetch_text(
         headers: 自定义请求头，为 None 时使用 COMMON_HEADERS。
         timeout: 请求超时时间（秒）。
         session: 可选的已有 ClientSession 实例，用于复用连接。
+        proxy: HTTP/HTTPS 代理地址。
 
     Returns:
         响应文本内容。
@@ -117,9 +125,10 @@ async def fetch_text(
     """
     request_headers = {**COMMON_HEADERS, **(headers or {})}
     client_timeout = aiohttp.ClientTimeout(total=timeout)
+    req_proxy = proxy.strip() if proxy and proxy.strip() else None
 
     async def _do_fetch(sess: aiohttp.ClientSession) -> str:
-        async with sess.get(url, headers=request_headers) as response:
+        async with sess.get(url, headers=request_headers, proxy=req_proxy) as response:
             response.raise_for_status()
             text = await response.text()
             logger.debug(
@@ -193,8 +202,12 @@ def clean_html(html_text: str) -> str:
     if not html_text:
         return ""
 
+    # 先移除 script 与 style 块，防止脚本与样式代码泄漏到文本中
+    text = re.sub(r"<script.*?>.*?</script>", "", html_text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<style.*?>.*?</style>", "", text, flags=re.DOTALL | re.IGNORECASE)
+
     # 将 <br> / <br/> / <p> 转换为换行符，保留段落结构
-    text = re.sub(r"<br\s*/?>", "\n", html_text, flags=re.IGNORECASE)
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"</p>", "\n", text, flags=re.IGNORECASE)
 
     # 移除所有 HTML 标签

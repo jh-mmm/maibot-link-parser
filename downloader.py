@@ -49,10 +49,12 @@ class MediaDownloader:
         url: str,
         max_duration: int,
         cookies: str = "",
+        proxy: str | None = None,
     ) -> Path | None:
         """通过 yt-dlp 下载 YouTube 视频并合并为 MP4。"""
         file_stem = f"youtube_{uuid4().hex[:8]}"
         output_template = self.runtime_dir / f"{file_stem}.%(ext)s"
+        target_proxy = (proxy.strip() if proxy and proxy.strip() else None) or (self.proxy or None)
 
         def download() -> Path | None:
             headers = {
@@ -67,7 +69,7 @@ class MediaDownloader:
                 headers["Cookie"] = cookies
 
             options = {
-                "format": "bv*[height<=720]+ba/b[height<=720]",
+                "format": "bv*[height<=720]+ba/b[height<=720]/best[ext=mp4]/best",
                 "http_headers": headers,
                 "max_filesize": self.max_size_bytes,
                 "merge_output_format": "mp4",
@@ -76,8 +78,8 @@ class MediaDownloader:
                 "quiet": True,
                 "no_warnings": True,
             }
-            if self.proxy:
-                options["proxy"] = self.proxy
+            if target_proxy:
+                options["proxy"] = target_proxy
 
             with yt_dlp.YoutubeDL(options) as ydl:
                 info = ydl.extract_info(url, download=False)
@@ -128,7 +130,7 @@ class MediaDownloader:
         if headers:
             default_headers.update(headers)
         
-        target_proxy = proxy if proxy is not None else (self.proxy or None)
+        target_proxy = (proxy.strip() if proxy and proxy.strip() else None) or (self.proxy or None)
 
         try:
             timeout = aiohttp.ClientTimeout(total=self.timeout)

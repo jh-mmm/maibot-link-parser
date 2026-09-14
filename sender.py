@@ -61,7 +61,7 @@ async def send_forward(
             "type": "node",
             "data": {
                 "name": "麦麦解析",
-                "uin": api.bot_uin or "10000",
+                "uin": int(api.bot_uin) if api.bot_uin and str(api.bot_uin).isdigit() else 10000,
                 "content": node,
             },
         }
@@ -223,6 +223,15 @@ def get_user_id(message: dict[str, Any]) -> str | None:
         uid = session.get("user_id") or session.get("userId")
         if uid is not None and str(uid).strip():
             return str(uid).strip()
+
+    # 5. session_id / chat_id / stream_id (如 "user_123456" 或 "private:123456")
+    for key in ("session_id", "chat_id", "stream_id"):
+        val = str(message.get(key) or "")
+        for prefix in ("user_", "user:", "private_", "private:", "person_", "person:"):
+            if val.startswith(prefix):
+                extracted = val[len(prefix):]
+                if extracted.isdigit():
+                    return extracted
 
     return None
 

@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 
 import aiohttp
 
-from ..utils import truncate_text
+from ..utils import COMMON_HEADERS, truncate_text
 from .base import BaseParser, ParseResult
 
 logger = logging.getLogger("plugin.com.maibot.link-parser.twitter")
@@ -34,11 +34,18 @@ class TwitterParser(BaseParser):
     config_key: ClassVar[str] = "twitter"
     url_patterns: ClassVar[list[re.Pattern]] = [
         # 标准格式: twitter.com/username/status/ID 或 x.com/username/status/ID
-        re.compile(r"https?://(?:www\.)?twitter\.com/(\w+)/status/(\d+)"),
-        re.compile(r"https?://(?:www\.)?x\.com/(\w+)/status/(\d+)"),
+        re.compile(r"(?:https?://)?(?:www\.|mobile\.|m\.)?twitter\.com/(\w+)/status/(\d+)"),
+        re.compile(r"(?:https?://)?(?:www\.|mobile\.|m\.)?x\.com/(\w+)/status/(\d+)"),
     ]
 
-    def __init__(self, api_key: str = "", api_base_url: str = "", timeout: int = 15, max_content_length: int = 500) -> None:
+    def __init__(
+        self,
+        api_key: str = "",
+        api_base_url: str = "",
+        timeout: int = 15,
+        max_content_length: int = 500,
+        proxy: str = "",
+    ) -> None:
         """初始化 Twitter 解析器
 
         Args:
@@ -46,11 +53,13 @@ class TwitterParser(BaseParser):
             api_base_url: 自定义 API 基础 URL，为空则使用 fxtwitter
             timeout: HTTP 请求超时（秒）
             max_content_length: 正文摘要最大字符数
+            proxy: HTTP/SOCKS5 代理地址
         """
         self._api_key = api_key.strip()
         self._api_base_url = api_base_url.strip().rstrip("/")
         self._timeout = timeout
         self._max_content_length = max_content_length
+        self._proxy = proxy.strip()
 
 
     def _validate_api_url(self, url: str) -> None:
@@ -197,12 +206,14 @@ class TwitterParser(BaseParser):
             url
         )
 
+        req_proxy = self._proxy or None
         async with aiohttp.ClientSession() as session:
 
             async with session.get(
                     url,
                     headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=self._timeout)
+                    timeout=aiohttp.ClientTimeout(total=self._timeout),
+                    proxy=req_proxy,
             ) as resp:
                 if resp.status != 200:
                     body = await resp.text()
@@ -249,8 +260,14 @@ class TwitterParser(BaseParser):
 
         logger.debug("使用 fxtwitter API: %s", url)
 
+        req_proxy = self._proxy or None
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=self._timeout)) as resp:
+            async with session.get(
+                url,
+                headers=COMMON_HEADERS,
+                timeout=aiohttp.ClientTimeout(total=self._timeout),
+                proxy=req_proxy,
+            ) as resp:
                 if resp.status != 200:
                     body = await resp.text()
                     raise ValueError(
@@ -305,6 +322,8 @@ class TwitterParser(BaseParser):
         likes = tweet.get("likes", 0)
         retweets = tweet.get("retweets", 0)
         replies = tweet.get("replies", 0)
+        views = tweet.get("views")
+        bookmarks = tweet.get("bookmarks")
 
         stats: dict[str, int] = {}
         if likes is not None:
@@ -313,11 +332,22 @@ class TwitterParser(BaseParser):
             stats["reposts"] = int(retweets)
         if replies is not None:
             stats["comments"] = int(replies)
+        if views is not None:
+            try:
+                stats["views"] = int(views)
+            except (ValueError, TypeError):
+                pass
+        if bookmarks is not None:
+            try:
+                stats["favorites"] = int(bookmarks)
+            except (ValueError, TypeError):
+                pass
 
         # ---- 媒体附件 ----
         images: list[str] = []
         video_url: str = ""
         video_thumbnail: str = ""
+        video_duration: int = 0
 
         media = tweet.get("media") or {}
 
@@ -334,6 +364,13 @@ class TwitterParser(BaseParser):
             first_video = videos[0]
             video_url = first_video.get("url", "")
             video_thumbnail = first_video.get("thumbnail_url", "")
+            duration_val = first_video.get("duration_millis") or first_video.get("duration") or 0
+            if duration_val:
+                try:
+                    dur_int = int(duration_val)
+                    video_duration = dur_int // 1000 if dur_int > 1000 else dur_int
+                except (ValueError, TypeError):
+                    video_duration = 0
 
         # ---- 发布时间 ----
         created_at = tweet.get("created_at", "")
@@ -348,6 +385,12 @@ class TwitterParser(BaseParser):
             stats.get("comments", "0"),
         )
 
+        extra: dict[str, Any] = {}
+        if created_at:
+            extra["created_at"] = created_at
+        if self._proxy:
+            extra["proxy"] = self._proxy
+
         return self._make_result(
             url=original_url,
             title="",  # 推文通常没有标题
@@ -357,7 +400,7 @@ class TwitterParser(BaseParser):
             cover_image=video_thumbnail or (images[0] if images else ""),
             images=images,
             video_url=video_url,
-            video_duration=0,  # fxtwitter 不提供时长
+            video_duration=video_duration,
             stats=stats,
-            extra={"created_at": created_at} if created_at else {},
+            extra=extra,
         )

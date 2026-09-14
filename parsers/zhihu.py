@@ -15,7 +15,6 @@ from bs4.element import NavigableString
 from curl_cffi import requests as curl_requests
 
 from .base import BaseParser, ParseResult
-from ..utils import COMMON_HEADERS, clean_html, truncate_text
 
 logger = logging.getLogger("plugin.com.maibot.link-parser.zhihu")
 
@@ -68,7 +67,7 @@ def _smart_truncate(text: str, max_length: int = 500) -> str:
     last_break = max((window.rfind(m) for m in _SENTENCE_MARKERS), default=-1)
     if last_break >= max_length // 3:
         cut = window[: last_break + 1].strip()
-        if not cut[-1] in "。！？!?":
+        if cut[-1] not in "。！？!?":
             return cut + "..."
         return cut
     return text[:max_length].rstrip(" ，,；;。！？!?、") + "..."
@@ -511,10 +510,10 @@ class ZhihuParser(BaseParser):
     platform_icon: ClassVar[str] = "💡"
     config_key: ClassVar[str] = "zhihu"
     url_patterns: ClassVar[list[re.Pattern]] = [
-        re.compile(r"(?:https?://)?(?:www\.)?zhihu\.com/question/(\d+)/answer/(\d+)"),
-        re.compile(r"(?:https?://)?(?:www\.)?zhihu\.com/question/(\d+)(?:[?#]|$)"),
-        re.compile(r"(?:https?://)?zhuanlan\.zhihu\.com/p/(\d+)"),
-        re.compile(r"(?:https?://)?(?:www\.)?zhihu\.com/pin/(\d+)"),
+        re.compile(r"(?:https?://)?(?:(?:www|m)\.)?zhihu\.com/question/(\d+)/answer/(\d+)"),
+        re.compile(r"(?:https?://)?(?:(?:www|m)\.)?zhihu\.com/question/(\d+)(?:[?#]|$)"),
+        re.compile(r"(?:https?://)?(?:(?:zhuanlan|www|m)\.)?zhihu\.com/p/(\d+)"),
+        re.compile(r"(?:https?://)?(?:(?:www|m)\.)?zhihu\.com/pin/(\d+)"),
     ]
 
     # 浏览器指纹配置：(名称, curl_cffi impersonate 值, 匹配的 User-Agent)。
@@ -587,7 +586,7 @@ class ZhihuParser(BaseParser):
             qid = match.group(1)
             aid = match.group(2)
             return await self._parse_answer(qid, aid, full_url)
-        elif "zhuanlan" in pattern_str:
+        elif "zhuanlan" in pattern_str or "/p/" in pattern_str:
             article_id = match.group(1)
             return await self._parse_article(article_id, full_url)
         elif "pin" in pattern_str:

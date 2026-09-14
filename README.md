@@ -64,8 +64,8 @@
 
 [plugin]
 name = "maibot-link-parser"     # 插件唯一标识名（请勿修改）
-config_version = "1.4.1"        # 配置文件版本（请勿修改）
-version = "1.4.1"               # 插件版本（请勿修改）
+config_version = "1.4.4"        # 配置文件版本（请勿修改）
+version = "1.4.4"               # 插件版本（请勿修改）
 enabled = true                  # 插件总开关：true=开启解析 | false=完全停用插件
 
 [general]
@@ -73,6 +73,7 @@ timeout = 15                  # 全局网络请求超时时间（秒）。网络
 max_content_length = 500      # 正文摘要最大字符数（超过此长度会自动在句末断句截断并显示省略号）
 max_video_size_mb = 50        # 允许下载并发送的最大视频体积（MB，超过限制则不发送视频文件）
 max_video_duration = 300      # 允许下载并发送的最大视频时长（秒，300 即 5 分钟，超过限制则跳过）
+show_status_hint = true        # 是否在识别到链接时发送提示消息（例如：🔗 识别到知乎链接，开始解析...；失败时发送失败原因）
 
 [platforms]
 zhihu = true                  # 是否启用【知乎】链接解析
@@ -106,6 +107,7 @@ user_blacklist = []
 [youtube]
 youtube_api_key = ""          # YouTube Data API v3 密钥（用于获取播放量/点赞数等数据，可选）
 cookies = ""                  # YouTube 登录 Cookies（用于 yt-dlp 下载受限视频，可选）
+proxy = ""                    # HTTP/HTTPS 代理地址（国内服务器推荐配置，如 "http://127.0.0.1:7890"）
 # 独立访问控制
 group_mode = "off"            # off=不限制 | whitelist=仅名单内群 | blacklist=名单内群不解析
 group_whitelist = []
@@ -117,6 +119,7 @@ user_blacklist = []
 [twitter]
 twitter_api_key = ""          # Twitter API Key（使用自建 fxtwitter 实例时可选）
 twitter_api_base_url = ""     # Twitter 自定义 API 根地址（使用自建 fxtwitter 实例时可选）
+proxy = ""                    # HTTP/HTTPS 代理地址（国内服务器推荐配置，如 "http://127.0.0.1:7890"）
 # 独立访问控制
 group_mode = "off"            # off=不限制 | whitelist=仅名单内群 | blacklist=名单内群不解析
 group_whitelist = []

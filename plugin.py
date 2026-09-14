@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import traceback
 from pathlib import Path
 from typing import ClassVar, Literal
@@ -49,12 +50,12 @@ class PluginSectionConfig(PluginConfigBase):
         json_schema_extra={"label": "插件标识", "disabled": True, "hidden": True},
     )
     config_version: str = Field(
-        default="1.4.3",
+        default="1.4.4",
         description="配置文件版本号",
         json_schema_extra={"label": "配置版本", "disabled": True, "hidden": True},
     )
     version: str = Field(
-        default="1.4.3",
+        default="1.4.4",
         description="插件发布版本号",
         json_schema_extra={"label": "插件版本", "disabled": True, "hidden": True},
     )
@@ -89,6 +90,11 @@ class GeneralSectionConfig(PluginConfigBase):
         default=300,
         description="允许下载并发送的最大视频时长（单位：秒，300 即 5 分钟，超过限制则跳过）",
         json_schema_extra={"label": "视频最大时长 (秒)"},
+    )
+    show_status_hint: bool = Field(
+        default=True,
+        description="是否在识别到链接时发送提示消息（例如：🔗 识别到知乎链接，开始解析...）",
+        json_schema_extra={"label": "发送解析提示消息"},
     )
 
 
@@ -201,6 +207,11 @@ class YouTubeSectionConfig(AccessControlConfig):
         description="YouTube 登录 Cookies（用于 yt-dlp 下载年龄受限或受限视频时填写，可选）",
         json_schema_extra={"label": "YouTube Cookies", "input_type": "textarea"},
     )
+    proxy: str = Field(
+        default="",
+        description="HTTP/HTTPS 代理地址（国内服务器推荐配置，例如 http://127.0.0.1:7890，留空则直连）",
+        json_schema_extra={"label": "YouTube 代理地址"},
+    )
 
 
 class TwitterSectionConfig(AccessControlConfig):
@@ -217,6 +228,11 @@ class TwitterSectionConfig(AccessControlConfig):
         default="",
         description="Twitter/X 自定义 API 根地址（例如 https://fxtwitter.example.com，留空使用公共接口）",
         json_schema_extra={"label": "Twitter API 地址"},
+    )
+    proxy: str = Field(
+        default="",
+        description="HTTP/HTTPS 代理地址（国内服务器推荐配置，例如 http://127.0.0.1:7890，留空则直连）",
+        json_schema_extra={"label": "Twitter 代理地址"},
     )
 
 
@@ -377,6 +393,7 @@ class LinkParserPlugin(MaiBotPlugin):
                     api_key=self.config.youtube.youtube_api_key,
                     cookies=self.config.youtube.cookies,
                     timeout=common_timeout,
+                    proxy=self.config.youtube.proxy,
                 )
             )
         if self.config.platforms.twitter:
@@ -386,6 +403,7 @@ class LinkParserPlugin(MaiBotPlugin):
                     api_base_url=self.config.twitter.twitter_api_base_url,
                     timeout=common_timeout,
                     max_content_length=max_content_length,
+                    proxy=self.config.twitter.proxy,
                 )
             )
         if self.config.platforms.pixiv:
@@ -484,9 +502,10 @@ class LinkParserPlugin(MaiBotPlugin):
                     match.group(0)[:80],
                 )
                 # 识别到链接即先告知用户，避免解析期间无任何反馈
-                await self._send_status(
-                    message, f"🔗 识别到{parser.platform_name}链接，开始解析..."
-                )
+                if self.config.general.show_status_hint:
+                    await self._send_status(
+                        message, f"🔗 识别到{parser.platform_name}链接，开始解析..."
+                    )
                 try:
                     result = await parser.parse(raw_text, match)
                     self.ctx.logger.info(
@@ -503,12 +522,13 @@ class LinkParserPlugin(MaiBotPlugin):
                         traceback.format_exc(),
                     )
                     # 解析失败时把原因反馈给用户（而非静默吞掉）
-                    await self._send_status(
-                        message,
-                        f"❌ {parser.platform_name}解析失败：{self._friendly_error(e)}",
-                    )
-                # 只处理第一条匹配的链接
-                break
+                    if self.config.general.show_status_hint:
+                        await self._send_status(
+                            message,
+                            f"❌ {parser.platform_name}解析失败：{self._friendly_error(e)}",
+                        )
+                        return True
+                    return False
         return False
 
     # ── 访问控制 ────────────────────────────────────────────────────────
@@ -607,65 +627,104 @@ class LinkParserPlugin(MaiBotPlugin):
 
     # ── 消息文本提取 ────────────────────────────────────────────────────
 
-    @staticmethod
-    def _extract_text(message: object) -> str:
-        """从 MaiBot 消息 kwargs 中提取纯文本。
+    @classmethod
+    def _extract_text(cls, message: object) -> str:
+        """从 MaiBot 消息中提取纯文本及卡片中携带的 URL。
 
-        MaiBot hook 的 message 结构 (实测)：
-        {
-            "message_id": "...",
-            "processed_plain_text": "纯文本",      ← 优先使用
-            "raw_message": [                        ← segment 列表
-                {"type": "text", "data": "文本内容"},
-                ...
-            ],
-            "session_id": "...",
-            ...
-        }
+        处理规则：
+        1. 排除引用回复 (reply / forward) 消息段，防止引用包含旧链接导致二次解析或死循环。
+        2. 若 raw_message 中存在引用回复，则忽略已被拼接引用的 processed_plain_text，仅提取当前消息实际输入的文本段。
+        3. 解析 raw_message 中的 JSON/XML/Ark/Miniapp 卡片消息段，提取卡片中的跳转 URL。
+        4. 解析 additional_config.platform_card_payloads 中的卡片 URL。
+        5. 去除可能残留的 `[回复 xxx: ...]` 前缀。
         """
         if not isinstance(message, dict):
             return str(message) if message else ""
 
-        # 1) processed_plain_text — MaiBot 已处理好的纯文本，最可靠
-        ppt = message.get("processed_plain_text")
-        if isinstance(ppt, str) and ppt.strip():
-            return ppt.strip()
+        from .utils import extract_urls
 
-        # 2) raw_message — 可能是字符串或 segment 列表
         raw = message.get("raw_message")
-        if isinstance(raw, str) and raw.strip():
-            return raw.strip()
+        card_urls: list[str] = []
+        user_text = ""
+
+        # 检查 raw_message 是否为 segment 列表
         if isinstance(raw, list):
+            has_reply = any(
+                isinstance(seg, dict) and seg.get("type") in ("reply", "forward")
+                for seg in raw
+            )
+
             parts: list[str] = []
             for seg in raw:
                 if isinstance(seg, str):
                     parts.append(seg)
                 elif isinstance(seg, dict):
-                    # MaiBot 实际格式: {"type": "text", "data": "文本"}
-                    # 兼容格式: {"type": "text", "content": "文本"}
-                    # 兼容格式: {"type": "text", "data": {"text": "文本"}}
                     seg_type = seg.get("type", "")
+                    # 忽略引用回复和转发消息段
+                    if seg_type in ("reply", "forward"):
+                        continue
                     if seg_type == "text":
                         data = seg.get("data")
                         if isinstance(data, str):
                             parts.append(data)
                         elif isinstance(data, dict):
-                            parts.append(data.get("text", ""))
+                            parts.append(str(data.get("text", "")))
                         else:
                             content = seg.get("content", "")
                             if isinstance(content, str):
                                 parts.append(content)
-            text = " ".join(p for p in parts if p)
-            if text.strip():
-                return text.strip()
+                    elif seg_type in ("json", "xml", "miniapp_card", "ark"):
+                        # 从卡片消息段中提取 URL
+                        data = seg.get("data")
+                        card_raw = ""
+                        if isinstance(data, str):
+                            card_raw = data
+                        elif isinstance(data, dict):
+                            card_raw = str(data.get("data") or data)
+                        if card_raw:
+                            card_urls.extend(extract_urls(card_raw))
 
-        # 3) 其他可能的字段名
-        for key in ("plain_text", "text", "content"):
-            val = message.get(key)
-            if isinstance(val, str) and val.strip():
-                return val.strip()
+            raw_text_combined = " ".join(p for p in parts if p).strip()
+            if has_reply:
+                # 引用回复消息中，processed_plain_text 会拼接被回复内容，必须使用过滤后的 raw_text
+                user_text = raw_text_combined
+            else:
+                # 非引用回复消息，优先使用 processed_plain_text，若无则使用拼接文本
+                ppt = message.get("processed_plain_text")
+                if isinstance(ppt, str) and ppt.strip():
+                    user_text = ppt.strip()
+                else:
+                    user_text = raw_text_combined
 
-        return ""
+        elif isinstance(raw, str) and raw.strip():
+            # raw_message 为字符串
+            ppt = message.get("processed_plain_text")
+            user_text = ppt.strip() if isinstance(ppt, str) and ppt.strip() else raw.strip()
+        else:
+            # 其他字段兜底
+            ppt = message.get("processed_plain_text")
+            if isinstance(ppt, str) and ppt.strip():
+                user_text = ppt.strip()
+            else:
+                for key in ("plain_text", "text", "content"):
+                    val = message.get(key)
+                    if isinstance(val, str) and val.strip():
+                        user_text = val.strip()
+                        break
+
+        # 从 additional_config 中提取卡片内容（部分适配器会将卡片原始 payload 放在此处）
+        add_config = message.get("additional_config")
+        if isinstance(add_config, dict):
+            payloads = add_config.get("platform_card_payloads")
+            if payloads:
+                card_urls.extend(extract_urls(str(payloads)))
+
+        # 清除开头可能残留的 `[回复 xxx: ...]` 文本前缀（作为额外安全保护）
+        if user_text:
+            user_text = re.sub(r"^\[回复\s*[^:：]+[:：][^\]]*\]\s*", "", user_text)
+
+        all_components = ([user_text] if user_text else []) + card_urls
+        return " ".join(all_components).strip()
 
     # ── stream_id 提取 ─────────────────────────────────────────────────
 
@@ -697,80 +756,89 @@ class LinkParserPlugin(MaiBotPlugin):
         """发送解析结果。
 
         知乎解析与多图结果优先使用合并转发；未命中或失败时降级为逐条发送。
+        图片在本次解析过程中只下载一次，外层统一清理临时文件。
         发送成功时返回 True。
         """
         image_urls = result.unique_image_urls
-        use_forward = self.config.onebot.merge_send and (
-            result.platform == "知乎" or len(image_urls) >= 2
-        )
+        media_headers = result.extra.get("media_headers")
+        proxy = result.extra.get("proxy")
 
-        if use_forward:
-            if await self._send_forward_result(result, image_urls, message):
-                # 合并转发已包含文本与图片；视频仍单独补发（知乎解析器不产生视频）。
-                if result.video_url:
-                    await self._send_video(result, message)
-                return True
-            self.ctx.logger.warning("link_parser | 合并转发失败，降级为逐条发送")
-
-        # 逐条发送（默认或降级路径）
-        text = self._format_text_result(result)
+        # 统一预下载图片（或包含已生成的本地动图/打码图）
+        downloaded = await self._download_images(image_urls, media_headers, proxy=proxy)
         try:
-            ok = await send_text(message, text, self._api)
-        except Exception as e:
-            self.ctx.logger.error("link_parser | 文本发送失败: %s", e)
-            return False
+            use_forward = self.config.onebot.merge_send and (
+                result.platform == "知乎" or len(downloaded) >= 2
+            )
 
-        if not ok:
-            self.ctx.logger.error("link_parser | 文本发送失败: OneBot 接口返回失败")
-            return False
-        self.ctx.logger.info("link_parser | 文本已发送")
+            if use_forward:
+                if await self._send_forward_result(result, downloaded, message):
+                    # 合并转发已包含文本与图片；视频仍单独补发（知乎解析器不产生视频）。
+                    if result.video_url:
+                        await self._send_video(result, message)
+                    return True
+                self.ctx.logger.warning("link_parser | 合并转发失败，降级为逐条发送")
 
-        # 文本已发送后，再补发解析到的原始图片和视频附件。
-        await self._send_images(result, message)
-        if result.video_url:
-            await self._send_video(result, message)
-        return True
+            # 逐条发送（默认或降级路径）
+            text = self._format_text_result(result)
+            try:
+                ok = await send_text(message, text, self._api)
+            except Exception as e:
+                self.ctx.logger.error("link_parser | 文本发送失败: %s", e)
+                return False
+
+            if not ok:
+                self.ctx.logger.error("link_parser | 文本发送失败: OneBot 接口返回失败")
+                return False
+            self.ctx.logger.info("link_parser | 文本已发送")
+
+            # 文本已发送后，发送已准备好的图片附件
+            await self._send_prepared_images(downloaded, message)
+
+            if result.video_url:
+                await self._send_video(result, message)
+            return True
+        finally:
+            # 统一清理本次解析所产生的所有本地图片临时文件
+            for path in downloaded:
+                path.unlink(missing_ok=True)
 
     async def _send_forward_result(
         self,
         result: ParseResult,
-        image_urls: list[str],
+        image_paths: list[Path],
         message: dict,
     ) -> bool:
-        """将文本与图片组装为合并转发消息发送，成功返回 True。"""
+        """将文本与图片组装为合并转发消息发送，成功返回 True。
+
+        注意：传入的 image_paths 由调用方统一管理生命周期，此处不负责清理。
+        """
         nodes: list[list[MessageSegment]] = []
 
         text = self._format_text_result(result)
         if text:
             nodes.append([text_segment(text)])
 
-        media_headers = result.extra.get("media_headers")
-        proxy = result.extra.get("proxy")
-        downloaded = await self._download_images(image_urls, media_headers, proxy=proxy)
-        try:
-            for image_path in downloaded:
+        for image_path in image_paths:
+            if image_path.exists():
                 nodes.append([image_segment(image_path)])
 
-            # 知乎：即使只有文字也走合并转发；非知乎多图：若无图片成功则降级。
-            if result.platform != "知乎" and not downloaded:
-                self.ctx.logger.warning("link_parser | 无可用图片节点，放弃合并转发")
-                return False
-            if not nodes:
-                return False
+        # 知乎：即使只有文字也走合并转发；非知乎多图：若无图片成功则降级。
+        if result.platform != "知乎" and not image_paths:
+            self.ctx.logger.warning("link_parser | 无可用图片节点，放弃合并转发")
+            return False
+        if not nodes:
+            return False
 
-            ok = await send_forward(message, nodes, self._api)
-            if ok:
-                self.ctx.logger.info(
-                    "link_parser | 合并转发已发送（%d 文本 + %d 图片节点）",
-                    1 if text else 0,
-                    len(downloaded),
-                )
-            else:
-                self.ctx.logger.warning("link_parser | 合并转发失败: OneBot 接口返回失败")
-            return ok
-        finally:
-            for path in downloaded:
-                path.unlink(missing_ok=True)
+        ok = await send_forward(message, nodes, self._api)
+        if ok:
+            self.ctx.logger.info(
+                "link_parser | 合并转发已发送（%d 文本 + %d 图片节点）",
+                1 if text else 0,
+                len(image_paths),
+            )
+        else:
+            self.ctx.logger.warning("link_parser | 合并转发失败: OneBot 接口返回失败")
+        return ok
 
     async def _download_images(
         self,
@@ -778,7 +846,7 @@ class LinkParserPlugin(MaiBotPlugin):
         media_headers: dict | None,
         proxy: str | None = None,
     ) -> list[Path]:
-        """下载图片列表，返回下载成功的本地路径（调用方负责清理）。"""
+        """下载图片列表，返回下载成功或已存在的本地路径（调用方负责最终清理）。"""
         downloaded: list[Path] = []
         for image_url in image_urls:
             if not image_url:
@@ -802,13 +870,11 @@ class LinkParserPlugin(MaiBotPlugin):
                 self.ctx.logger.warning("link_parser | 图片下载失败: %s", e)
         return downloaded
 
-    async def _send_images(self, result: ParseResult, message: dict) -> None:
-        """下载并发送解析结果中的原始图片。"""
-        image_urls = result.unique_image_urls
-        media_headers = result.extra.get("media_headers")
-        proxy = result.extra.get("proxy")
-        downloaded = await self._download_images(image_urls, media_headers, proxy=proxy)
-        for image_path in downloaded:
+    async def _send_prepared_images(self, image_paths: list[Path], message: dict) -> None:
+        """发送已准备好的本地图片列表。"""
+        for image_path in image_paths:
+            if not image_path.exists():
+                continue
             try:
                 ok = await send_image(message, image_path, self._api)
                 if ok:
@@ -817,7 +883,17 @@ class LinkParserPlugin(MaiBotPlugin):
                     self.ctx.logger.warning("link_parser | 图片发送失败: OneBot 接口返回失败")
             except Exception as e:
                 self.ctx.logger.warning("link_parser | 图片发送失败: %s", e)
-            finally:
+
+    async def _send_images(self, result: ParseResult, message: dict) -> None:
+        """下载并发送解析结果中的原始图片（独立调用兜底）。"""
+        image_urls = result.unique_image_urls
+        media_headers = result.extra.get("media_headers")
+        proxy = result.extra.get("proxy")
+        downloaded = await self._download_images(image_urls, media_headers, proxy=proxy)
+        try:
+            await self._send_prepared_images(downloaded, message)
+        finally:
+            for image_path in downloaded:
                 image_path.unlink(missing_ok=True)
 
     async def _send_video(self, result: ParseResult, message: dict) -> None:
@@ -836,16 +912,19 @@ class LinkParserPlugin(MaiBotPlugin):
         video_path = None
         try:
             media_headers = result.extra.get("media_headers")
+            proxy = result.extra.get("proxy")
             if result.extra.get("video_downloader") == "yt-dlp":
                 video_path = await self._downloader.download_youtube_video(
                     result.video_url,
                     max_duration=self.config.general.max_video_duration,
                     cookies=result.extra.get("youtube_cookies", ""),
+                    proxy=proxy,
                 )
             else:
                 video_path = await self._downloader.download_video(
                     result.video_url,
                     headers=media_headers,
+                    proxy=proxy,
                 )
             if video_path and video_path.exists():
                 ok = await send_video(message, video_path, self._api)
